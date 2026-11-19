@@ -18,5 +18,6 @@ A 100% local, offline-first macOS password manager built with Python, native Coc
 ## Run from Source (macOS)
     python3 -m venv venv
     source venv/bin/activate
-    pip install -r requirements.txt
+    pip install -r requirements.txt cython
+    python -c "from setuptools import setup; from Cython.Build import cythonize; setup(ext_modules=cythonize('vault_core.pyx'))" build_ext --inplace
     python vault_app.py
