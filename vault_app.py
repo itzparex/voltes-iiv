@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import math
 import time
 import hmac
@@ -13,6 +14,7 @@ import string
 import subprocess
 import threading
 import webbrowser
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -31,9 +33,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 NSBundle.mainBundle().infoDictionary()["CFBundleName"] = "Voltes IIV"
 
-VAULT_DIR = Path.home() / ".local_vault"
-VAULT_FILE = VAULT_DIR / "vault.enc"
-SETTINGS_FILE = VAULT_DIR / "settings.json"
+DEFAULT_VAULT_DIR = Path.home() / ".local_vault"
+SETTINGS_FILE = DEFAULT_VAULT_DIR / "settings.json"
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "icon.png"
 APP_BUNDLE = Path("/Applications/Voltes IIV.app")
 LAUNCH_AGENT = Path.home() / "Library/LaunchAgents/com.local.voltes-iiv.plist"
@@ -48,6 +49,7 @@ DEFAULT_SETTINGS = {
     "auto_submit": False,
     "clear_clipboard_seconds": 20,
     "touch_id_enabled": False,
+    "vault_dir": str(DEFAULT_VAULT_DIR),
 }
 
 WORDLIST = [
@@ -99,10 +101,18 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict):
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(VAULT_DIR, 0o700)
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
-    os.chmod(SETTINGS_FILE, 0o600)
+    DEFAULT_VAULT_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(DEFAULT_VAULT_DIR, 0o700)
+    tmp = SETTINGS_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, SETTINGS_FILE)
+
+
+def get_active_vault_paths():
+    settings = load_settings()
+    vdir = Path(settings.get("vault_dir") or DEFAULT_VAULT_DIR).expanduser()
+    return vdir, vdir / "vault.enc"
 
 
 def keychain_store_master(password: str) -> bool:
@@ -169,19 +179,29 @@ def derive_key(master_password: str, salt: bytes) -> bytes:
 
 
 def save_encrypted_vault(data: list, master_password: str):
-    VAULT_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(VAULT_DIR, 0o700)
+    vdir, vfile = get_active_vault_paths()
+    vdir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(vdir, 0o700)
+    except Exception:
+        pass
     salt = os.urandom(SALT_SIZE)
     nonce = os.urandom(NONCE_SIZE)
     key = derive_key(master_password, salt)
     ciphertext = AESGCM(key).encrypt(nonce, json.dumps(data).encode("utf-8"), None)
-    with open(VAULT_FILE, "wb") as f:
+    # Atomic write prevents partial/corrupted files during iCloud Drive or USB sync
+    tmp_file = vfile.with_suffix(".enc.tmp")
+    with open(tmp_file, "wb") as f:
         f.write(salt + nonce + ciphertext)
-    os.chmod(VAULT_FILE, 0o600)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp_file, 0o600)
+    os.replace(tmp_file, vfile)
 
 
 def load_encrypted_vault(master_password: str) -> list:
-    with open(VAULT_FILE, "rb") as f:
+    _, vfile = get_active_vault_paths()
+    with open(vfile, "rb") as f:
         raw = f.read()
     salt = raw[:SALT_SIZE]
     nonce = raw[SALT_SIZE:SALT_SIZE + NONCE_SIZE]
@@ -189,6 +209,19 @@ def load_encrypted_vault(master_password: str) -> list:
     key = derive_key(master_password, salt)
     plaintext = AESGCM(key).decrypt(nonce, ciphertext, None)
     return json.loads(plaintext.decode("utf-8"))
+
+
+def evaluate_password_weakness(pw: str) -> bool:
+    if len(pw) < 12:
+        return True
+    score = 0
+    if any(c.islower() for c in pw) and any(c.isupper() for c in pw):
+        score += 1
+    if any(c.isdigit() for c in pw):
+        score += 1
+    if any(not c.isalnum() for c in pw):
+        score += 1
+    return score < 2
 
 
 class VaultAPI:
@@ -203,7 +236,8 @@ class VaultAPI:
         self.window = window
 
     def vault_exists(self):
-        return VAULT_FILE.exists()
+        _, vfile = get_active_vault_paths()
+        return vfile.exists()
 
     def can_use_touch_id(self):
         ctx = LAContext.alloc().init()
@@ -260,6 +294,7 @@ class VaultAPI:
 
     def get_settings(self):
         self.settings = load_settings()
+        _, vfile = get_active_vault_paths()
         ctx = LAContext.alloc().init()
         hw_supported, _ = ctx.canEvaluatePolicy_error_(LAPolicyDeviceOwnerAuthentication, None)
         return {
@@ -268,13 +303,197 @@ class VaultAPI:
             "biometrics_supported": bool(hw_supported),
             "launch_at_login": is_launch_at_login_enabled(),
             "python_binary": os.path.realpath(os.sys.executable),
-            "vault_path": str(VAULT_FILE),
+            "vault_path": str(vfile),
+            "vault_dir": str(vfile.parent),
         }
 
     def update_settings(self, new_settings: dict):
         self.settings.update(new_settings)
         save_settings(self.settings)
         return {"ok": True, "settings": self.settings}
+
+    def choose_sync_folder(self):
+        if self.master_password is None or self.window is None:
+            return {"ok": False, "error": "Unlock vault first."}
+        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        if not result:
+            return {"ok": False}
+        chosen_dir = Path(result[0] if isinstance(result, (list, tuple)) else result).expanduser()
+        target_file = chosen_dir / "vault.enc"
+
+        # If target folder already has an existing vault.enc (e.g. from another Mac via iCloud Drive), load it
+        if target_file.exists():
+            try:
+                old_dir = self.settings.get("vault_dir", str(DEFAULT_VAULT_DIR))
+                self.settings["vault_dir"] = str(chosen_dir)
+                save_settings(self.settings)
+                loaded = load_encrypted_vault(self.master_password)
+                self.entries = loaded
+                return {
+                    "ok": True,
+                    "entries": self.entries,
+                    "vault_path": str(target_file),
+                    "vault_dir": str(chosen_dir),
+                    "message": "Connected to existing encrypted vault in sync folder"
+                }
+            except Exception:
+                self.settings["vault_dir"] = old_dir
+                save_settings(self.settings)
+                return {
+                    "ok": False,
+                    "error": "Existing vault.enc in that folder uses a different Master Password."
+                }
+
+        # Otherwise save current vault into the new sync folder
+        self.settings["vault_dir"] = str(chosen_dir)
+        save_settings(self.settings)
+        save_encrypted_vault(self.entries, self.master_password)
+        return {
+            "ok": True,
+            "entries": self.entries,
+            "vault_path": str(target_file),
+            "vault_dir": str(chosen_dir),
+            "message": "Vault synced to new folder"
+        }
+
+    def reset_sync_folder(self):
+        if self.master_password is None:
+            return {"ok": False}
+        self.settings["vault_dir"] = str(DEFAULT_VAULT_DIR)
+        save_settings(self.settings)
+        save_encrypted_vault(self.entries, self.master_password)
+        _, vfile = get_active_vault_paths()
+        return {
+            "ok": True,
+            "vault_path": str(vfile),
+            "vault_dir": str(DEFAULT_VAULT_DIR),
+            "message": "Reset to default local folder (~/.local_vault)"
+        }
+
+    def import_csv_file(self):
+        if self.master_password is None or self.window is None:
+            return {"ok": False, "error": "Unlock vault first."}
+        result = self.window.create_file_dialog(
+            webview.OPEN_DIALOG,
+            allow_multiple=False,
+            file_types=("CSV Files (*.csv)", "All files (*.*)")
+        )
+        if not result:
+            return {"ok": False}
+        csv_path = Path(result[0] if isinstance(result, (list, tuple)) else result)
+        try:
+            content = csv_path.read_text(encoding="utf-8-sig")
+            reader = csv.DictReader(content.splitlines())
+            if not reader.fieldnames:
+                return {"ok": False, "error": "CSV file is empty or missing headers."}
+
+            existing_sigs = {
+                (e.get("title", "").lower(), e.get("username", "").lower(), e.get("password", ""))
+                for e in self.entries
+            }
+
+            imported = 0
+            skipped = 0
+            for raw_row in reader:
+                row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw_row.items()}
+                title = (
+                    row.get("title")
+                    or row.get("name")
+                    or row.get("website")
+                    or row.get("url")
+                    or row.get("login_uri")
+                    or ""
+                )
+                username = (
+                    row.get("username")
+                    or row.get("login_username")
+                    or row.get("email")
+                    or row.get("user")
+                    or ""
+                )
+                password = (
+                    row.get("password")
+                    or row.get("login_password")
+                    or row.get("pass")
+                    or ""
+                )
+                url = (
+                    row.get("url")
+                    or row.get("website")
+                    or row.get("login_uri")
+                    or row.get("origin_url")
+                    or ""
+                )
+                totp = (
+                    row.get("otpauth")
+                    or row.get("totp")
+                    or row.get("login_totp")
+                    or row.get("2fa")
+                    or ""
+                )
+                notes = row.get("notes") or row.get("note") or row.get("extra") or ""
+
+                if not password:
+                    skipped += 1
+                    continue
+                if not title:
+                    title = url or username or "Imported Login"
+
+                sig = (title.lower(), username.lower(), password)
+                if sig in existing_sigs:
+                    skipped += 1
+                    continue
+
+                self.entries.append({
+                    "title": title,
+                    "username": username,
+                    "password": password,
+                    "url": url,
+                    "totp": totp,
+                    "notes": notes,
+                    "favorite": False,
+                    "history": [],
+                })
+                existing_sigs.add(sig)
+                imported += 1
+
+            if imported > 0:
+                save_encrypted_vault(self.entries, self.master_password)
+            return {
+                "ok": True,
+                "entries": self.entries,
+                "imported": imported,
+                "skipped": skipped,
+            }
+        except Exception as ex:
+            return {"ok": False, "error": f"Import failed: {ex}"}
+
+    def get_watchtower_report(self):
+        pw_counts = Counter(e.get("password", "") for e in self.entries if e.get("password"))
+        reused_indices = []
+        weak_indices = []
+        no_2fa_indices = []
+
+        for idx, item in enumerate(self.entries):
+            pw = item.get("password", "")
+            if pw and pw_counts[pw] > 1:
+                reused_indices.append(idx)
+            if evaluate_password_weakness(pw):
+                weak_indices.append(idx)
+            if not (item.get("totp") or "").strip():
+                no_2fa_indices.append(idx)
+
+        total = len(self.entries)
+        unique_compromised = len(set(reused_indices) | set(weak_indices))
+        score = 100 if total == 0 else max(0, round(((total - unique_compromised) / total) * 100))
+
+        return {
+            "total": total,
+            "score": score,
+            "reused": reused_indices,
+            "weak": weak_indices,
+            "no_2fa": no_2fa_indices,
+        }
 
     def open_accessibility_settings(self):
         subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
@@ -324,13 +543,33 @@ class VaultAPI:
         if self.master_password is None:
             return {"ok": False, "error": "Vault locked"}
         if index is not None and 0 <= index < len(self.entries):
+            existing = self.entries[index]
+            history = list(existing.get("history", []))
+            old_pw = existing.get("password", "")
+            new_pw = record.get("password", "")
+            # Record previous password in history whenever password changes
+            if old_pw and new_pw and old_pw != new_pw:
+                history.insert(0, {
+                    "password": old_pw,
+                    "changed_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+                })
+                history = history[:15]
+            record["history"] = history
             self.entries[index] = record
             active_idx = index
         else:
+            record.setdefault("history", [])
             self.entries.append(record)
             active_idx = len(self.entries) - 1
         save_encrypted_vault(self.entries, self.master_password)
         return {"ok": True, "entries": self.entries, "activeIndex": active_idx}
+
+    def clear_entry_history(self, index: int):
+        if self.master_password is None or not (0 <= index < len(self.entries)):
+            return {"ok": False}
+        self.entries[index]["history"] = []
+        save_encrypted_vault(self.entries, self.master_password)
+        return {"ok": True, "entries": self.entries}
 
     def toggle_favorite(self, index: int):
         if self.master_password is None or not (0 <= index < len(self.entries)):
@@ -368,7 +607,6 @@ class VaultAPI:
             bits = int(word_count * math.log2(len(WORDLIST)) + (7 if include_num else 0))
             return {"password": pw, "bits": bits}
 
-        # Random Password Mode
         length = max(8, min(64, int(opts.get("length", 20))))
         use_numbers = bool(opts.get("numbers", True))
         use_symbols = bool(opts.get("symbols", True))
@@ -390,7 +628,6 @@ class VaultAPI:
             pools.append(symbols)
 
         full_alphabet = "".join(pools)
-        # Guarantee at least one character from each enabled pool
         chars = [secrets.choice(p) for p in pools]
         while len(chars) < length:
             chars.append(secrets.choice(full_alphabet))
@@ -472,7 +709,8 @@ class VaultAPI:
         return {"ok": True}
 
     def export_backup(self):
-        if not VAULT_FILE.exists() or self.window is None:
+        _, vfile = get_active_vault_paths()
+        if not vfile.exists() or self.window is None:
             return {"ok": False}
         stamp = datetime.now().strftime("%Y-%m-%d")
         result = self.window.create_file_dialog(
@@ -481,7 +719,7 @@ class VaultAPI:
         )
         if result:
             dest = result if isinstance(result, str) else result[0]
-            shutil.copy2(VAULT_FILE, dest)
+            shutil.copy2(vfile, dest)
             return {"ok": True, "path": dest}
         return {"ok": False}
 
@@ -639,7 +877,7 @@ HTML_UI = """<!DOCTYPE html>
 
   /* SIDEBAR */
   .sidebar {
-    width: 280px;
+    width: 288px;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--border);
     display: flex;
@@ -647,7 +885,7 @@ HTML_UI = """<!DOCTYPE html>
     height: 100%;
   }
   .sidebar-header {
-    padding: 42px 16px 12px;
+    padding: 42px 16px 10px;
     -webkit-app-region: drag;
   }
   .brand-row {
@@ -668,7 +906,7 @@ HTML_UI = """<!DOCTYPE html>
   }
   .pill-btn:hover { background: #38383e; }
 
-  .search-wrap { position: relative; -webkit-app-region: no-drag; }
+  .search-wrap { position: relative; -webkit-app-region: no-drag; margin-bottom: 10px; }
   .search-input {
     width: 100%; height: 32px;
     background: var(--bg-input);
@@ -684,6 +922,18 @@ HTML_UI = """<!DOCTYPE html>
     position: absolute; left: 10px; top: 8px;
     font-size: 12px; color: var(--text-secondary); pointer-events: none;
   }
+
+  .nav-pills {
+    display: flex; gap: 6px; -webkit-app-region: no-drag;
+  }
+  .nav-pill {
+    flex: 1; padding: 6px 8px; border-radius: 8px;
+    background: var(--bg-input); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 11.5px; font-weight: 600;
+    cursor: pointer; text-align: center; transition: all 0.15s;
+  }
+  .nav-pill:hover { color: var(--text-primary); background: #34343a; }
+  .nav-pill.active-nav { background: rgba(10, 132, 255, 0.18); color: var(--accent); border-color: rgba(10, 132, 255, 0.35); }
 
   .item-list {
     flex: 1;
@@ -738,7 +988,7 @@ HTML_UI = """<!DOCTYPE html>
     padding: 44px 42px 36px;
     -webkit-app-region: drag;
   }
-  .main-content { max-width: 620px; width: 100%; margin: 0 auto; -webkit-app-region: no-drag; }
+  .main-content { max-width: 630px; width: 100%; margin: 0 auto; -webkit-app-region: no-drag; }
 
   .empty-state {
     height: 100%; display: flex; flex-direction: column;
@@ -810,7 +1060,18 @@ HTML_UI = """<!DOCTYPE html>
   .totp-code { font-family: "SF Mono", Menlo, monospace; font-size: 18px; font-weight: 700; color: var(--accent); }
   .field-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: 14px; align-items: center; }
 
-  /* 1PASSWORD-STYLE STANDALONE GENERATOR */
+  /* WATCHTOWER DASHBOARD */
+  .wt-grid {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px;
+  }
+  .wt-stat {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
+    padding: 14px; text-align: center;
+  }
+  .wt-num { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+  .wt-lbl { font-size: 11.5px; color: var(--text-secondary); }
+
+  /* 1PASSWORD-STYLE GENERATOR */
   .seg-control {
     display: flex; background: var(--bg-input); padding: 3px; border-radius: 10px;
     border: 1px solid var(--border); margin-bottom: 16px;
@@ -925,12 +1186,15 @@ HTML_UI = """<!DOCTYPE html>
           <span class="search-icon">🔍</span>
           <input id="search-input" class="search-input" type="text" placeholder="Search (⌘F)" oninput="renderSidebar()" />
         </div>
+        <div class="nav-pills">
+          <button id="nav-gen" class="nav-pill" onclick="openGenerator()" title="Shortcut: Command + G">Generator</button>
+          <button id="nav-wt" class="nav-pill" onclick="openWatchtower()" title="Shortcut: Command + W">Watchtower</button>
+        </div>
       </div>
       <div id="item-list" class="item-list"></div>
       <div class="sidebar-footer">
-        <button class="btn-add" onclick="openForm()" title="Shortcut: Command + N">+ New</button>
-        <button class="pill-btn" onclick="openGenerator()" title="Password Generator (⌘G)">Generator</button>
-        <button class="pill-btn" onclick="openSettings()" title="Shortcut: Command + ,">Settings</button>
+        <button class="btn-add" onclick="openForm()" title="Shortcut: Command + N">+ New Login</button>
+        <button id="nav-set" class="pill-btn" onclick="openSettings()" title="Shortcut: Command + ,">Settings</button>
       </div>
     </aside>
 
@@ -945,7 +1209,9 @@ HTML_UI = """<!DOCTYPE html>
   let entries = [];
   let appSettings = { auto_lock_seconds: 180, auto_submit: false, clear_clipboard_seconds: 20, touch_id_enabled: false };
   let activeIndex = null;
+  let currentView = "detail"; // detail | generator | watchtower | settings | form
   let revealPw = false;
+  let showHistory = false;
   let isNewVault = false;
   let lastActivity = Date.now();
   let pendingQuickFill = false;
@@ -977,7 +1243,13 @@ HTML_UI = """<!DOCTYPE html>
     const t = document.getElementById("toast");
     t.textContent = msg;
     t.classList.add("show");
-    setTimeout(() => t.classList.remove("show"), 2000);
+    setTimeout(() => t.classList.remove("show"), 2200);
+  }
+
+  function setNavHighlight(view) {
+    currentView = view;
+    document.getElementById("nav-gen").classList.toggle("active-nav", view === "generator");
+    document.getElementById("nav-wt").classList.toggle("active-nav", view === "watchtower");
   }
 
   function touchActivity() { lastActivity = Date.now(); }
@@ -987,6 +1259,7 @@ HTML_UI = """<!DOCTYPE html>
     if (document.getElementById("app-shell").style.display === "flex" && e.metaKey) {
       if (e.key.toLowerCase() === "n") { e.preventDefault(); openForm(); }
       else if (e.key.toLowerCase() === "g") { e.preventDefault(); openGenerator(); }
+      else if (e.key.toLowerCase() === "w") { e.preventDefault(); openWatchtower(); }
       else if (e.key.toLowerCase() === "f") { e.preventDefault(); document.getElementById("search-input").focus(); }
       else if (e.key.toLowerCase() === "l" && !e.shiftKey) { e.preventDefault(); lockVault(); }
       else if (e.key === ",") { e.preventDefault(); openSettings(); }
@@ -1021,7 +1294,7 @@ HTML_UI = """<!DOCTYPE html>
         lockVault();
         return;
       }
-      if (activeIndex !== null && entries[activeIndex] && entries[activeIndex].totp) {
+      if (currentView === "detail" && activeIndex !== null && entries[activeIndex] && entries[activeIndex].totp) {
         const res = await pywebview.api.get_totp(entries[activeIndex].totp);
         const el = document.getElementById("live-totp");
         if (el && res) {
@@ -1107,6 +1380,7 @@ HTML_UI = """<!DOCTYPE html>
     entries = [];
     activeIndex = null;
     revealPw = false;
+    showHistory = false;
     isNewVault = false;
     document.getElementById("lock-title").textContent = "Voltes IIV";
     document.getElementById("lock-subtitle").textContent = "Enter your Master Password to unlock your local encrypted vault.";
@@ -1123,6 +1397,73 @@ HTML_UI = """<!DOCTYPE html>
       .map((item, idx) => ({ item, idx }))
       .sort((a, b) => (b.item.favorite ? 1 : 0) - (a.item.favorite ? 1 : 0))
       .map(x => x.idx);
+  }
+
+  /* WATCHTOWER SECURITY AUDIT */
+  async function openWatchtower() {
+    activeIndex = null;
+    setNavHighlight("watchtower");
+    renderSidebar();
+    const rep = await pywebview.api.get_watchtower_report();
+    const pane = document.getElementById("main-content");
+
+    const buildAuditList = (indices, badgeText, badgeCls) => {
+      if (indices.length === 0) {
+        return `<div class="field-row"><div class="field-sub">No issues detected in this category.</div></div>`;
+      }
+      return indices.map(idx => {
+        const item = entries[idx];
+        return `
+          <div class="field-row" style="cursor:pointer;" onclick="activeIndex=${idx}; revealPw=false; showHistory=false; renderSidebar(); renderDetail();">
+            <div>
+              <div class="field-label">${escapeHtml(item.title)}</div>
+              <div class="field-sub">${escapeHtml(item.username || "No username")}</div>
+            </div>
+            <div class="field-actions">
+              <span class="status-pill ${badgeCls}">${badgeText}</span>
+              <button class="pill-btn" onclick="event.stopPropagation(); openForm(${idx});">Fix</button>
+            </div>
+          </div>
+        `;
+      }).join("");
+    };
+
+    const scoreColor = rep.score >= 85 ? "var(--success)" : (rep.score >= 60 ? "var(--warning)" : "var(--danger)");
+
+    pane.innerHTML = `
+      <div class="detail-top">
+        <div class="detail-title">Watchtower Audit</div>
+        <button class="pill-btn" onclick="const s=getSortedIndices();if(s.length>0){activeIndex=s[0];renderSidebar();}renderDetail();">Done</button>
+      </div>
+
+      <div class="wt-grid">
+        <div class="wt-stat">
+          <div class="wt-num" style="color:${scoreColor};">${rep.score}%</div>
+          <div class="wt-lbl">Vault Health</div>
+        </div>
+        <div class="wt-stat">
+          <div class="wt-num" style="color:${rep.reused.length ? 'var(--danger)' : 'var(--text-primary)'};">${rep.reused.length}</div>
+          <div class="wt-lbl">Reused</div>
+        </div>
+        <div class="wt-stat">
+          <div class="wt-num" style="color:${rep.weak.length ? '#ff9f0a' : 'var(--text-primary)'};">${rep.weak.length}</div>
+          <div class="wt-lbl">Weak</div>
+        </div>
+        <div class="wt-stat">
+          <div class="wt-num" style="color:var(--accent);">${rep.no_2fa.length}</div>
+          <div class="wt-lbl">Missing 2FA</div>
+        </div>
+      </div>
+
+      <div class="section-heading">Reused Passwords (${rep.reused.length})</div>
+      <div class="group-card">${buildAuditList(rep.reused, "Reused", "warn")}</div>
+
+      <div class="section-heading">Weak Passwords (${rep.weak.length})</div>
+      <div class="group-card">${buildAuditList(rep.weak, "Weak", "warn")}</div>
+
+      <div class="section-heading">Accounts Without 2FA (${rep.no_2fa.length})</div>
+      <div class="group-card">${buildAuditList(rep.no_2fa, "No 2FA", "")}</div>
+    `;
   }
 
   /* 1PASSWORD-STYLE STANDALONE GENERATOR */
@@ -1160,8 +1501,9 @@ HTML_UI = """<!DOCTYPE html>
     }
   }
 
-  async function openGenerator(prefillPassword = null) {
+  async function openGenerator() {
     activeIndex = null;
+    setNavHighlight("generator");
     renderSidebar();
     const pane = document.getElementById("main-content");
 
@@ -1407,7 +1749,7 @@ HTML_UI = """<!DOCTYPE html>
         </div>
         ${item.favorite ? '<span class="star-badge">★</span>' : ''}
       `;
-      div.onclick = () => { activeIndex = idx; revealPw = false; renderSidebar(); renderDetail(); };
+      div.onclick = () => { activeIndex = idx; revealPw = false; showHistory = false; renderSidebar(); renderDetail(); };
       list.appendChild(div);
     });
   }
@@ -1433,14 +1775,30 @@ HTML_UI = """<!DOCTYPE html>
     }
   }
 
+  async function copyHistoryPw(pw) {
+    await pywebview.api.copy_to_clipboard(pw);
+    showToast("Previous password copied");
+  }
+
+  async function clearHistory(idx) {
+    const res = await pywebview.api.clear_entry_history(idx);
+    if (res.ok) {
+      entries = res.entries;
+      showHistory = false;
+      renderDetail();
+      showToast("Password history cleared");
+    }
+  }
+
   async function renderDetail() {
+    setNavHighlight("detail");
     const pane = document.getElementById("main-content");
     if (activeIndex === null || !entries[activeIndex]) {
       pane.innerHTML = `
         <div class="empty-state">
           <div class="big-icon">🛡️</div>
           <h3 style="color:var(--text-primary); margin-bottom:6px;">No Item Selected</h3>
-          <p style="font-size:13px;">Select a login from the sidebar, open the <b>Generator</b>, or press <b>⌘⇧L</b> anywhere to Quick-Fill.</p>
+          <p style="font-size:13px;">Select a login from the sidebar, open <b>Watchtower</b>, or press <b>⌘⇧L</b> anywhere to Quick-Fill.</p>
         </div>
       `;
       return;
@@ -1450,6 +1808,7 @@ HTML_UI = """<!DOCTYPE html>
     const st = passwordStrength(item.password);
     const letter = (item.title[0] || "?").toUpperCase();
     const masked = "•".repeat(Math.min(item.password.length, 16));
+    const history = item.history || [];
 
     let totpHtml = "";
     if (item.totp) {
@@ -1478,6 +1837,37 @@ HTML_UI = """<!DOCTYPE html>
               <div class="field-value" style="white-space:pre-wrap;">${escapeHtml(item.notes)}</div>
             </div>
           </div>
+        </div>
+      `;
+    }
+
+    let historyHtml = "";
+    if (history.length > 0) {
+      const rows = showHistory ? history.map(h => `
+        <div class="field-row">
+          <div>
+            <div class="field-value mono" style="font-size:13px;">${escapeHtml(h.password)}</div>
+            <div class="field-sub">Replaced on ${escapeHtml(h.changed_at || "Unknown date")}</div>
+          </div>
+          <div class="field-actions">
+            <button class="pill-btn" onclick="copyHistoryPw(${JSON.stringify(h.password).replace(/"/g, '&quot;')})">Copy</button>
+          </div>
+        </div>
+      `).join("") : "";
+
+      historyHtml = `
+        <div class="group-card">
+          <div class="field-row">
+            <div>
+              <div class="field-label">Previous Passwords (${history.length})</div>
+              <div class="field-sub">Archived automatically when you update this login's password</div>
+            </div>
+            <div class="field-actions">
+              <button class="pill-btn" onclick="showHistory = !showHistory; renderDetail();">${showHistory ? "Hide" : "View"}</button>
+              ${showHistory ? `<button class="btn-danger" onclick="clearHistory(${activeIndex})">Clear</button>` : ""}
+            </div>
+          </div>
+          ${rows}
         </div>
       `;
     }
@@ -1537,12 +1927,14 @@ HTML_UI = """<!DOCTYPE html>
       </div>
 
       ${notesHtml}
+      ${historyHtml}
     `;
   }
 
   /* SETTINGS SCREEN */
   async function openSettings() {
     activeIndex = null;
+    setNavHighlight("settings");
     renderSidebar();
     const info = await pywebview.api.get_settings();
     appSettings = info.settings;
@@ -1553,6 +1945,40 @@ HTML_UI = """<!DOCTYPE html>
       <div class="detail-top">
         <div class="detail-title">Settings</div>
         <button class="pill-btn" onclick="const s=getSortedIndices();if(s.length>0){activeIndex=s[0];renderSidebar();}renderDetail();">Done</button>
+      </div>
+
+      <div class="section-heading">Import & Zero-Knowledge Sync</div>
+      <div class="group-card">
+        <div class="field-row">
+          <div>
+            <div class="field-label">Import Passwords from CSV</div>
+            <div class="field-sub">Supports Apple Passwords, Chrome, Brave, 1Password, and Bitwarden CSV files.</div>
+          </div>
+          <div class="field-actions">
+            <button class="btn-autofill" onclick="handleImportCSV()">Import CSV</button>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Vault Sync Folder (iCloud Drive / USB)</div>
+            <div id="sync-path-label" class="field-sub mono" style="font-size:11px;">${escapeHtml(info.vault_path)}</div>
+          </div>
+          <div class="field-actions">
+            <button class="pill-btn" onclick="handleChooseSyncFolder()">Change Folder</button>
+            <button class="pill-btn" onclick="handleResetSyncFolder()">Default</button>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Export Encrypted Backup</div>
+            <div class="field-sub">Save a standalone AES-256-GCM snapshot (.enc) anywhere.</div>
+          </div>
+          <div class="field-actions">
+            <button class="pill-btn" onclick="exportBackup()">Export Backup</button>
+          </div>
+        </div>
       </div>
 
       <div class="section-heading">Biometrics & Startup</div>
@@ -1648,16 +2074,6 @@ HTML_UI = """<!DOCTYPE html>
             </select>
           </div>
         </div>
-
-        <div class="field-row">
-          <div>
-            <div class="field-label">Encrypted Vault Backup</div>
-            <div class="field-sub mono" style="font-size:11px;">${escapeHtml(info.vault_path)}</div>
-          </div>
-          <div class="field-actions">
-            <button class="pill-btn" onclick="exportBackup()">Export Backup</button>
-          </div>
-        </div>
       </div>
 
       <div class="section-heading">Change Master Password</div>
@@ -1673,6 +2089,41 @@ HTML_UI = """<!DOCTYPE html>
         <button class="btn-primary" style="width:190px;" onclick="submitChangeMasterPw()">Update Master Password</button>
       </div>
     `;
+  }
+
+  async function handleImportCSV() {
+    const res = await pywebview.api.import_csv_file();
+    if (!res) return;
+    if (res.ok) {
+      entries = res.entries;
+      renderSidebar();
+      showToast(`Imported ${res.imported} logins (${res.skipped} skipped)`);
+    } else if (res.error) {
+      showToast(res.error);
+    }
+  }
+
+  async function handleChooseSyncFolder() {
+    const res = await pywebview.api.choose_sync_folder();
+    if (!res) return;
+    if (res.ok) {
+      entries = res.entries;
+      renderSidebar();
+      const lbl = document.getElementById("sync-path-label");
+      if (lbl) lbl.textContent = res.vault_path;
+      showToast(res.message);
+    } else if (res.error) {
+      showToast(res.error);
+    }
+  }
+
+  async function handleResetSyncFolder() {
+    const res = await pywebview.api.reset_sync_folder();
+    if (res && res.ok) {
+      const lbl = document.getElementById("sync-path-label");
+      if (lbl) lbl.textContent = res.vault_path;
+      showToast(res.message);
+    }
   }
 
   async function handleToggleTouchID(el) {
@@ -1713,6 +2164,7 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   function openForm(editIdx = null, prefillPassword = "") {
+    setNavHighlight("form");
     const item = editIdx !== null
       ? entries[editIdx]
       : { title: "", username: "", password: prefillPassword || "", url: "", totp: "", notes: "", favorite: false };
@@ -1934,9 +2386,9 @@ if __name__ == "__main__":
         "Voltes IIV",
         html=HTML_UI,
         js_api=api,
-        width=920,
-        height=640,
-        min_size=(760, 520),
+        width=940,
+        height=650,
+        min_size=(780, 520),
         background_color="#161618",
         hidden=False,
     )
