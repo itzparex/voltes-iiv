@@ -1,4 +1,6 @@
 import os
+import sys
+import math
 import time
 import hmac
 import base64
@@ -32,9 +34,8 @@ NSBundle.mainBundle().infoDictionary()["CFBundleName"] = "Voltes IIV"
 VAULT_DIR = Path.home() / ".local_vault"
 VAULT_FILE = VAULT_DIR / "vault.enc"
 SETTINGS_FILE = VAULT_DIR / "settings.json"
-import sys
 ICON_PATH = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "icon.png"
-APP_BUNDLE = Path.home() / "Applications/Voltes IIV.app"
+APP_BUNDLE = Path("/Applications/Voltes IIV.app")
 LAUNCH_AGENT = Path.home() / "Library/LaunchAgents/com.local.voltes-iiv.plist"
 KEYCHAIN_SERVICE = "com.local.voltes-iiv.master"
 KEYCHAIN_ACCOUNT = os.environ.get("USER", "voltes_user")
@@ -48,6 +49,41 @@ DEFAULT_SETTINGS = {
     "clear_clipboard_seconds": 20,
     "touch_id_enabled": False,
 }
+
+WORDLIST = [
+    "anchor", "anthem", "apricot", "arcade", "arctic", "arrow", "atlas", "aurora",
+    "autumn", "avenue", "bamboo", "banjo", "beacon", "beetle", "bison", "blazer",
+    "blossom", "boulder", "breeze", "bridge", "bronze", "brook", "cactus", "camera",
+    "canopy", "canyon", "capsule", "caravan", "cascade", "castle", "cedar", "chalice",
+    "chariot", "cheetah", "cipher", "citadel", "cobalt", "comet", "compass", "condor",
+    "coral", "cosmos", "coyote", "crater", "crimson", "crystal", "cypress", "dagger",
+    "delta", "desert", "diamond", "dolphin", "dragon", "drizzle", "dynamo", "eclipse",
+    "emerald", "empire", "encore", "engine", "equinox", "falcon", "feather", "festival",
+    "firefly", "flannel", "forest", "fortress", "fossil", "fountain", "frontier", "galaxy",
+    "garnet", "gazelle", "geyser", "glacier", "granite", "gravity", "griffin", "harbor",
+    "harvest", "hawk", "hazel", "helmet", "horizon", "hunter", "hybrid", "iceberg",
+    "ignite", "impulse", "indigo", "island", "ivory", "jacket", "jaguar", "jasper",
+    "javelin", "journey", "jungle", "jupiter", "kestrel", "kingdom", "kraken", "lagoon",
+    "lantern", "legacy", "legend", "leopard", "liberty", "lightning", "lotus", "lunar",
+    "magnet", "mammoth", "marble", "mariner", "meadow", "mercury", "meteor", "mirage",
+    "monarch", "monsoon", "mountain", "mustang", "nebula", "nectar", "neptune", "nomad",
+    "nova", "oasis", "obsidian", "ocean", "octave", "odyssey", "olive", "omega",
+    "onyx", "oracle", "orbit", "orchid", "orion", "osprey", "outpost", "pacific",
+    "paladin", "panther", "paradox", "pegasus", "pelican", "pendulum", "penguin", "phantom",
+    "phoenix", "pioneer", "planet", "plasma", "platinum", "prism", "pulsar", "pyramid",
+    "quantum", "quartz", "quasar", "quest", "quiver", "radar", "rainbow", "ranger",
+    "raptor", "raven", "reactor", "redwood", "relic", "ripple", "river", "rocket",
+    "saffron", "samurai", "sapphire", "saturn", "scarlet", "scepter", "scorpion", "scout",
+    "sentinel", "sequoia", "shadow", "sherpa", "shogun", "sierra", "silver", "solstice",
+    "sonar", "sparrow", "spectrum", "sphinx", "spiral", "spruce", "starlight", "stealth",
+    "stellar", "storm", "stratos", "summit", "sunrise", "supernova", "swallow", "sycamore",
+    "tempest", "terrain", "thistle", "thunder", "tiger", "timber", "titan", "topaz",
+    "tornado", "torrent", "trident", "trilogy", "tundra", "turbine", "twilight", "typhoon",
+    "unicorn", "universe", "valkyrie", "valley", "vanguard", "velocity", "velvet", "venture",
+    "vertex", "viking", "viper", "volcano", "voltes", "vortex", "voyager", "walrus",
+    "warden", "warrior", "waterfall", "whisper", "wildcat", "willow", "winter", "wizard",
+    "wolverine", "wonder", "zenith", "zephyr", "zodiac"
+]
 
 
 def load_settings() -> dict:
@@ -101,6 +137,7 @@ def is_launch_at_login_enabled() -> bool:
 def set_launch_at_login(enabled: bool) -> bool:
     if enabled:
         LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+        target_app = APP_BUNDLE if APP_BUNDLE.exists() else (Path.home() / "Applications/Voltes IIV.app")
         plist = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -111,7 +148,7 @@ def set_launch_at_login(enabled: bool) -> bool:
     <array>
         <string>/usr/bin/open</string>
         <string>-a</string>
-        <string>{APP_BUNDLE}</string>
+        <string>{target_app}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -180,7 +217,6 @@ class VaultAPI:
 
         done = threading.Event()
         auth_result = {"success": False}
-
         ctx = LAContext.alloc().init()
 
         def reply_handler(success, error):
@@ -311,11 +347,58 @@ class VaultAPI:
             save_encrypted_vault(self.entries, self.master_password)
         return {"ok": True, "entries": self.entries}
 
-    def generate_password(self, length=20, use_symbols=True):
-        alphabet = string.ascii_letters + string.digits
+    def generate_password(self, options=None):
+        opts = options or {}
+        mode = opts.get("mode", "random")
+
+        if mode == "memorable":
+            word_count = max(3, min(12, int(opts.get("words", 4))))
+            sep = str(opts.get("separator", "-"))
+            capitalize = bool(opts.get("capitalize", True))
+            include_num = bool(opts.get("include_number", True))
+
+            chosen = [secrets.choice(WORDLIST) for _ in range(word_count)]
+            if capitalize:
+                chosen = [w.capitalize() for w in chosen]
+            if include_num:
+                num_idx = secrets.randbelow(word_count)
+                chosen[num_idx] = f"{chosen[num_idx]}{secrets.randbelow(90) + 10}"
+
+            pw = sep.join(chosen)
+            bits = int(word_count * math.log2(len(WORDLIST)) + (7 if include_num else 0))
+            return {"password": pw, "bits": bits}
+
+        # Random Password Mode
+        length = max(8, min(64, int(opts.get("length", 20))))
+        use_numbers = bool(opts.get("numbers", True))
+        use_symbols = bool(opts.get("symbols", True))
+        avoid_ambiguous = bool(opts.get("avoid_ambiguous", False))
+
+        letters = string.ascii_letters
+        digits = string.digits
+        symbols = "!@#$%^&*-_=+?"
+
+        if avoid_ambiguous:
+            for ch in "0O1lI":
+                letters = letters.replace(ch, "")
+                digits = digits.replace(ch, "")
+
+        pools = [letters]
+        if use_numbers:
+            pools.append(digits)
         if use_symbols:
-            alphabet += "!@#$%^&*-_=+"
-        return "".join(secrets.choice(alphabet) for _ in range(int(length)))
+            pools.append(symbols)
+
+        full_alphabet = "".join(pools)
+        # Guarantee at least one character from each enabled pool
+        chars = [secrets.choice(p) for p in pools]
+        while len(chars) < length:
+            chars.append(secrets.choice(full_alphabet))
+        secrets.SystemRandom().shuffle(chars)
+
+        pw = "".join(chars[:length])
+        bits = int(length * math.log2(len(full_alphabet)))
+        return {"password": pw, "bits": bits}
 
     def get_totp(self, secret: str):
         cleaned = (secret or "").strip().replace(" ", "").upper()
@@ -424,6 +507,7 @@ HTML_UI = """<!DOCTYPE html>
     --danger: #ff453a;
     --success: #30d158;
     --warning: #ffd60a;
+    --symbol-orange: #ff9f0a;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-user-select: none; }
   input, textarea, select { -webkit-user-select: text; }
@@ -635,7 +719,7 @@ HTML_UI = """<!DOCTYPE html>
   .sidebar-footer {
     padding: 12px 14px;
     border-top: 1px solid var(--border);
-    display: flex; gap: 7px;
+    display: flex; gap: 6px;
   }
   .btn-add {
     flex: 1; height: 32px;
@@ -726,6 +810,36 @@ HTML_UI = """<!DOCTYPE html>
   .totp-code { font-family: "SF Mono", Menlo, monospace; font-size: 18px; font-weight: 700; color: var(--accent); }
   .field-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: 14px; align-items: center; }
 
+  /* 1PASSWORD-STYLE STANDALONE GENERATOR */
+  .seg-control {
+    display: flex; background: var(--bg-input); padding: 3px; border-radius: 10px;
+    border: 1px solid var(--border); margin-bottom: 16px;
+  }
+  .seg-btn {
+    flex: 1; padding: 7px 12px; border: none; border-radius: 8px;
+    background: transparent; color: var(--text-secondary);
+    font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+  }
+  .seg-btn.active { background: #3a3a40; color: var(--text-primary); box-shadow: 0 2px 6px rgba(0,0,0,0.25); }
+
+  .gen-hero {
+    background: #1a1a1d; border: 1px solid var(--border); border-radius: 14px;
+    padding: 20px; margin-bottom: 16px;
+  }
+  .gen-display {
+    font-family: "SF Mono", Menlo, monospace; font-size: 20px; font-weight: 600;
+    line-height: 1.5; word-break: break-all; min-height: 62px;
+    display: flex; align-items: center; flex-wrap: wrap;
+    margin-bottom: 14px; -webkit-user-select: text;
+  }
+  .ch-num { color: #64d2ff; }
+  .ch-sym { color: var(--symbol-orange); }
+  .strength-bar-track {
+    height: 5px; background: var(--bg-input); border-radius: 99px; overflow: hidden; margin-bottom: 14px;
+  }
+  .strength-bar-fill { height: 100%; width: 100%; background: var(--success); transition: width 0.2s, background 0.2s; }
+  .gen-hero-footer { display: flex; align-items: center; justify-content: space-between; }
+
   /* APPLE TOGGLE SWITCH */
   .switch { position: relative; display: inline-block; width: 42px; height: 24px; }
   .switch input { opacity: 0; width: 0; height: 0; }
@@ -746,7 +860,7 @@ HTML_UI = """<!DOCTYPE html>
   .form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
   .pw-gen-row { display: flex; gap: 8px; align-items: center; }
   .pw-gen-row .apple-input { margin-bottom: 0; }
-  .gen-opts { display: flex; align-items: center; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
+  .gen-opts { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
   textarea.apple-input { height: 84px; padding: 10px 13px; resize: vertical; font-family: inherit; }
 
   /* TOAST */
@@ -814,7 +928,8 @@ HTML_UI = """<!DOCTYPE html>
       </div>
       <div id="item-list" class="item-list"></div>
       <div class="sidebar-footer">
-        <button class="btn-add" onclick="openForm()" title="Shortcut: Command + N">+ New Login</button>
+        <button class="btn-add" onclick="openForm()" title="Shortcut: Command + N">+ New</button>
+        <button class="pill-btn" onclick="openGenerator()" title="Password Generator (⌘G)">Generator</button>
         <button class="pill-btn" onclick="openSettings()" title="Shortcut: Command + ,">Settings</button>
       </div>
     </aside>
@@ -837,6 +952,20 @@ HTML_UI = """<!DOCTYPE html>
   let spotMatches = [];
   let spotSelected = 0;
 
+  let genState = {
+    mode: "random",
+    length: 20,
+    numbers: true,
+    symbols: true,
+    avoid_ambiguous: false,
+    words: 4,
+    separator: "-",
+    capitalize: true,
+    include_number: true,
+    currentPassword: "",
+    bits: 120
+  };
+
   const colors = ["#0a84ff", "#30d158", "#bf5af2", "#ff9f0a", "#ff375f", "#5e5ce6", "#64d2ff"];
   function avatarColor(str) {
     let h = 0;
@@ -857,6 +986,7 @@ HTML_UI = """<!DOCTYPE html>
     touchActivity();
     if (document.getElementById("app-shell").style.display === "flex" && e.metaKey) {
       if (e.key.toLowerCase() === "n") { e.preventDefault(); openForm(); }
+      else if (e.key.toLowerCase() === "g") { e.preventDefault(); openGenerator(); }
       else if (e.key.toLowerCase() === "f") { e.preventDefault(); document.getElementById("search-input").focus(); }
       else if (e.key.toLowerCase() === "l" && !e.shiftKey) { e.preventDefault(); lockVault(); }
       else if (e.key === ",") { e.preventDefault(); openSettings(); }
@@ -995,6 +1125,184 @@ HTML_UI = """<!DOCTYPE html>
       .map(x => x.idx);
   }
 
+  /* 1PASSWORD-STYLE STANDALONE GENERATOR */
+  function colorizePassword(pw) {
+    return Array.from(pw).map(ch => {
+      const esc = escapeHtml(ch);
+      if (/[0-9]/.test(ch)) return `<span class="ch-num">${esc}</span>`;
+      if (/[^A-Za-z0-9]/.test(ch)) return `<span class="ch-sym">${esc}</span>`;
+      return `<span>${esc}</span>`;
+    }).join("");
+  }
+
+  async function refreshGeneratedPassword() {
+    const res = await pywebview.api.generate_password(genState);
+    genState.currentPassword = res.password;
+    genState.bits = res.bits;
+    const disp = document.getElementById("gen-color-display");
+    if (disp) disp.innerHTML = colorizePassword(res.password);
+
+    const bar = document.getElementById("gen-strength-bar");
+    const lbl = document.getElementById("gen-strength-label");
+    if (bar && lbl) {
+      const pct = Math.min(100, Math.round((res.bits / 128) * 100));
+      bar.style.width = pct + "%";
+      if (res.bits >= 80) {
+        bar.style.background = "var(--success)";
+        lbl.textContent = `Strong (${res.bits}-bit entropy)`;
+      } else if (res.bits >= 55) {
+        bar.style.background = "var(--warning)";
+        lbl.textContent = `Good (${res.bits}-bit entropy)`;
+      } else {
+        bar.style.background = "var(--danger)";
+        lbl.textContent = `Fair (${res.bits}-bit entropy)`;
+      }
+    }
+  }
+
+  async function openGenerator(prefillPassword = null) {
+    activeIndex = null;
+    renderSidebar();
+    const pane = document.getElementById("main-content");
+
+    const controlsHtml = genState.mode === "random" ? `
+      <div class="group-card">
+        <div class="field-row">
+          <div>
+            <div class="field-label">Characters: <span id="g-len-txt" style="color:var(--accent);">${genState.length}</span></div>
+            <div class="field-sub">Recommended: 16 to 24 characters</div>
+          </div>
+          <div class="field-actions" style="width:200px;">
+            <input type="range" min="8" max="64" value="${genState.length}" style="width:100%;"
+              oninput="genState.length=Number(this.value); document.getElementById('g-len-txt').textContent=this.value; refreshGeneratedPassword();" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Numbers (0-9)</div>
+          </div>
+          <div class="field-actions">
+            <label class="switch">
+              <input type="checkbox" ${genState.numbers ? "checked" : ""} onchange="genState.numbers=this.checked; refreshGeneratedPassword();">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Symbols (!@#$%^&*)</div>
+          </div>
+          <div class="field-actions">
+            <label class="switch">
+              <input type="checkbox" ${genState.symbols ? "checked" : ""} onchange="genState.symbols=this.checked; refreshGeneratedPassword();">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Avoid Ambiguous Characters</div>
+            <div class="field-sub">Excludes 0, O, 1, l, I for easy manual typing</div>
+          </div>
+          <div class="field-actions">
+            <label class="switch">
+              <input type="checkbox" ${genState.avoid_ambiguous ? "checked" : ""} onchange="genState.avoid_ambiguous=this.checked; refreshGeneratedPassword();">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    ` : `
+      <div class="group-card">
+        <div class="field-row">
+          <div>
+            <div class="field-label">Words: <span id="g-words-txt" style="color:var(--accent);">${genState.words}</span></div>
+            <div class="field-sub">4+ words creates a high-entropy passphrase</div>
+          </div>
+          <div class="field-actions" style="width:200px;">
+            <input type="range" min="3" max="10" value="${genState.words}" style="width:100%;"
+              oninput="genState.words=Number(this.value); document.getElementById('g-words-txt').textContent=this.value; refreshGeneratedPassword();" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Separator</div>
+          </div>
+          <div class="field-actions">
+            <select class="apple-select" onchange="genState.separator=this.value; refreshGeneratedPassword();">
+              <option value="-" ${genState.separator==="-"?"selected":""}>Hyphen ( - )</option>
+              <option value="_" ${genState.separator==="_"?"selected":""}>Underscore ( _ )</option>
+              <option value="." ${genState.separator==="."?"selected":""}>Period ( . )</option>
+              <option value=" " ${genState.separator===" "?"selected":""}>Space</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Capitalize Words</div>
+          </div>
+          <div class="field-actions">
+            <label class="switch">
+              <input type="checkbox" ${genState.capitalize ? "checked" : ""} onchange="genState.capitalize=this.checked; refreshGeneratedPassword();">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div>
+            <div class="field-label">Include Number</div>
+          </div>
+          <div class="field-actions">
+            <label class="switch">
+              <input type="checkbox" ${genState.include_number ? "checked" : ""} onchange="genState.include_number=this.checked; refreshGeneratedPassword();">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    `;
+
+    pane.innerHTML = `
+      <div class="detail-top">
+        <div class="detail-title">Password Generator</div>
+        <button class="btn-autofill" onclick="openForm(null, genState.currentPassword)">+ Save as New Login</button>
+      </div>
+
+      <div class="seg-control">
+        <button class="seg-btn ${genState.mode==='random'?'active':''}" onclick="genState.mode='random'; openGenerator();">Random Password</button>
+        <button class="seg-btn ${genState.mode==='memorable'?'active':''}" onclick="genState.mode='memorable'; openGenerator();">Memorable Passphrase</button>
+      </div>
+
+      <div class="gen-hero">
+        <div id="gen-color-display" class="gen-display"></div>
+        <div class="strength-bar-track"><div id="gen-strength-bar" class="strength-bar-fill"></div></div>
+        <div class="gen-hero-footer">
+          <span id="gen-strength-label" style="font-size:12px; color:var(--text-secondary);">Strong</span>
+          <div style="display:flex; gap:8px;">
+            <button class="pill-btn" onclick="refreshGeneratedPassword()">↻ Regenerate</button>
+            <button class="btn-primary" style="width:auto; height:30px; padding:0 14px; font-size:12.5px;" onclick="copyGeneratedPassword()">Copy Password</button>
+          </div>
+        </div>
+      </div>
+
+      ${controlsHtml}
+    `;
+
+    await refreshGeneratedPassword();
+  }
+
+  async function copyGeneratedPassword() {
+    if (!genState.currentPassword) return;
+    await pywebview.api.copy_to_clipboard(genState.currentPassword);
+    showToast("Generated password copied");
+  }
+
   /* QUICK FILL SPOTLIGHT LOGIC */
   function openQuickFill() {
     const ov = document.getElementById("quick-overlay");
@@ -1110,7 +1418,7 @@ HTML_UI = """<!DOCTYPE html>
     if (pw.length >= 12) score++;
     if (pw.length >= 16) score++;
     if (/[A-Z]/.test(pw) && /[a-z]/.test(pw)) score++;
-    if (/\d/.test(pw)) score++;
+    if (/[0-9]/.test(pw)) score++;
     if (/[^A-Za-z0-9]/.test(pw)) score++;
     if (score >= 4) return { label: "Strong Password", cls: "" };
     return { label: "Fair Password", cls: "fair" };
@@ -1132,7 +1440,7 @@ HTML_UI = """<!DOCTYPE html>
         <div class="empty-state">
           <div class="big-icon">🛡️</div>
           <h3 style="color:var(--text-primary); margin-bottom:6px;">No Item Selected</h3>
-          <p style="font-size:13px;">Select a login from the sidebar or press <b>⌘⇧L</b> anywhere to Quick-Fill.</p>
+          <p style="font-size:13px;">Select a login from the sidebar, open the <b>Generator</b>, or press <b>⌘⇧L</b> anywhere to Quick-Fill.</p>
         </div>
       `;
       return;
@@ -1205,7 +1513,7 @@ HTML_UI = """<!DOCTYPE html>
         <div class="field-row">
           <div>
             <div class="field-label">Password</div>
-            <div class="field-value mono">${revealPw ? escapeHtml(item.password) : masked}</div>
+            <div class="field-value mono">${revealPw ? colorizePassword(item.password) : masked}</div>
           </div>
           <div class="field-actions">
             <button class="pill-btn" onclick="revealPw = !revealPw; renderDetail();">${revealPw ? "Hide" : "Show"}</button>
@@ -1404,8 +1712,10 @@ HTML_UI = """<!DOCTYPE html>
     }
   }
 
-  function openForm(editIdx = null) {
-    const item = editIdx !== null ? entries[editIdx] : { title: "", username: "", password: "", url: "", totp: "", notes: "", favorite: false };
+  function openForm(editIdx = null, prefillPassword = "") {
+    const item = editIdx !== null
+      ? entries[editIdx]
+      : { title: "", username: "", password: prefillPassword || "", url: "", totp: "", notes: "", favorite: false };
     const pane = document.getElementById("main-content");
     pane.innerHTML = `
       <div class="detail-top">
@@ -1424,11 +1734,15 @@ HTML_UI = """<!DOCTYPE html>
           <label>Password</label>
           <div class="pw-gen-row">
             <input id="f-pw" class="apple-input mono" placeholder="Strong password" value="${escapeAttr(item.password)}" />
-            <button class="pill-btn" style="height:38px; padding:0 14px;" onclick="genPw()">Generate</button>
+            <button class="pill-btn" style="height:38px; padding:0 12px;" onclick="genFormPw('random')">Random</button>
+            <button class="pill-btn" style="height:38px; padding:0 12px;" onclick="genFormPw('memorable')">Passphrase</button>
           </div>
           <div class="gen-opts">
             <span>Length: <b id="gen-len-val">20</b></span>
-            <input id="gen-len" type="range" min="12" max="32" value="20" oninput="document.getElementById('gen-len-val').textContent=this.value" />
+            <input id="gen-len" type="range" min="12" max="40" value="20" oninput="document.getElementById('gen-len-val').textContent=this.value" />
+            <label style="display:flex; align-items:center; gap:5px; margin:0; cursor:pointer;">
+              <input id="gen-num" type="checkbox" checked /> Numbers
+            </label>
             <label style="display:flex; align-items:center; gap:5px; margin:0; cursor:pointer;">
               <input id="gen-sym" type="checkbox" checked /> Symbols
             </label>
@@ -1454,10 +1768,21 @@ HTML_UI = """<!DOCTYPE html>
     `;
   }
 
-  async function genPw() {
+  async function genFormPw(mode) {
     const len = Number(document.getElementById("gen-len").value || 20);
+    const num = Boolean(document.getElementById("gen-num").checked);
     const sym = Boolean(document.getElementById("gen-sym").checked);
-    document.getElementById("f-pw").value = await pywebview.api.generate_password(len, sym);
+    const res = await pywebview.api.generate_password({
+      mode,
+      length: len,
+      numbers: num,
+      symbols: sym,
+      words: 4,
+      separator: "-",
+      capitalize: true,
+      include_number: true
+    });
+    document.getElementById("f-pw").value = res.password;
   }
 
   async function saveForm(editIdx) {
@@ -1610,7 +1935,7 @@ if __name__ == "__main__":
         html=HTML_UI,
         js_api=api,
         width=920,
-        height=630,
+        height=640,
         min_size=(760, 520),
         background_color="#161618",
         hidden=False,
