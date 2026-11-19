@@ -189,7 +189,6 @@ def save_encrypted_vault(data: list, master_password: str):
     nonce = os.urandom(NONCE_SIZE)
     key = derive_key(master_password, salt)
     ciphertext = AESGCM(key).encrypt(nonce, json.dumps(data).encode("utf-8"), None)
-    # Atomic write prevents partial/corrupted files during iCloud Drive or USB sync
     tmp_file = vfile.with_suffix(".enc.tmp")
     with open(tmp_file, "wb") as f:
         f.write(salt + nonce + ciphertext)
@@ -321,7 +320,6 @@ class VaultAPI:
         chosen_dir = Path(result[0] if isinstance(result, (list, tuple)) else result).expanduser()
         target_file = chosen_dir / "vault.enc"
 
-        # If target folder already has an existing vault.enc (e.g. from another Mac via iCloud Drive), load it
         if target_file.exists():
             try:
                 old_dir = self.settings.get("vault_dir", str(DEFAULT_VAULT_DIR))
@@ -344,7 +342,6 @@ class VaultAPI:
                     "error": "Existing vault.enc in that folder uses a different Master Password."
                 }
 
-        # Otherwise save current vault into the new sync folder
         self.settings["vault_dir"] = str(chosen_dir)
         save_settings(self.settings)
         save_encrypted_vault(self.entries, self.master_password)
@@ -547,7 +544,6 @@ class VaultAPI:
             history = list(existing.get("history", []))
             old_pw = existing.get("password", "")
             new_pw = record.get("password", "")
-            # Record previous password in history whenever password changes
             if old_pw and new_pw and old_pw != new_pw:
                 history.insert(0, {
                     "password": old_pw,
@@ -732,62 +728,109 @@ HTML_UI = """<!DOCTYPE html>
 <title>Voltes IIV</title>
 <style>
   :root {
-    --bg-window: #161618;
-    --bg-sidebar: #1e1e21;
-    --bg-card: #242428;
-    --bg-input: #2c2c31;
-    --bg-hover: rgba(255, 255, 255, 0.06);
-    --border: rgba(255, 255, 255, 0.08);
+    --bg-canvas: #121214;
+    --bg-sidebar: #19191d;
+    --bg-card: #202025;
+    --bg-card-hover: #26262c;
+    --bg-input: #28282e;
+    --border: rgba(255, 255, 255, 0.075);
+    --border-highlight: rgba(255, 255, 255, 0.13);
     --text-primary: #f5f5f7;
-    --text-secondary: #98989f;
+    --text-secondary: #8e8e95;
+    --text-tertiary: #636369;
     --accent: #0a84ff;
-    --accent-hover: #0071e3;
+    --accent-hover: #2492ff;
+    --accent-soft: rgba(10, 132, 255, 0.16);
     --danger: #ff453a;
     --success: #30d158;
     --warning: #ffd60a;
-    --symbol-orange: #ff9f0a;
+    --orange: #ff9f0a;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; -webkit-user-select: none; }
   input, textarea, select { -webkit-user-select: text; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", sans-serif;
-    background: var(--bg-window);
+    background: var(--bg-canvas);
     color: var(--text-primary);
     height: 100vh;
     overflow: hidden;
     display: flex;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* NATIVE-STYLE BUTTONS */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    background: var(--bg-input);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.06);
+    border-radius: 8px;
+    padding: 5px 11px;
+    font-size: 12px; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.14s ease;
+  }
+  .btn:hover { background: #323239; border-color: var(--border-highlight); }
+  .btn:active { transform: scale(0.98); }
+
+  .btn-accent {
+    background: var(--accent);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.18);
+    box-shadow: 0 2px 8px rgba(10, 132, 255, 0.32), inset 0 1px 0 rgba(255,255,255,0.22);
+  }
+  .btn-accent:hover { background: var(--accent-hover); }
+
+  .btn-soft-accent {
+    background: var(--accent-soft);
+    color: #5ac8fa;
+    border: 1px solid rgba(10, 132, 255, 0.28);
+  }
+  .btn-soft-accent:hover { background: rgba(10, 132, 255, 0.25); }
+
+  .btn-danger {
+    background: rgba(255, 69, 58, 0.13);
+    color: var(--danger);
+    border: 1px solid rgba(255, 69, 58, 0.24);
+  }
+  .btn-danger:hover { background: rgba(255, 69, 58, 0.24); }
+
+  .icon-btn {
+    width: 28px; height: 28px; padding: 0; border-radius: 7px;
   }
 
   /* LOCK SCREEN */
   #lock-screen {
     position: fixed; inset: 0;
-    background: radial-gradient(circle at 50% 20%, #25262b 0%, #121214 100%);
+    background:
+      radial-gradient(600px circle at 50% 15%, rgba(10, 132, 255, 0.12), transparent 60%),
+      radial-gradient(circle at 50% 25%, #202026 0%, #0e0e10 100%);
     display: flex; align-items: center; justify-content: center;
     z-index: 50;
     -webkit-app-region: drag;
   }
   .lock-card {
     width: 380px;
-    background: rgba(34, 34, 38, 0.85);
-    backdrop-filter: blur(24px);
-    border: 1px solid var(--border);
-    border-radius: 20px;
+    background: rgba(28, 28, 33, 0.88);
+    backdrop-filter: blur(28px);
+    border: 1px solid var(--border-highlight);
+    border-radius: 22px;
     padding: 36px 32px;
     text-align: center;
-    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 30px 80px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255,255,255,0.08);
     -webkit-app-region: no-drag;
   }
-  .lock-badge {
-    width: 64px; height: 64px;
+  .lock-shield {
+    width: 66px; height: 66px;
     margin: 0 auto 18px;
-    border-radius: 16px;
-    background: linear-gradient(145deg, #2c2d33, #1a1b1f);
-    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 18px;
+    background: linear-gradient(155deg, #0a84ff, #0051a8);
+    border: 1px solid rgba(255,255,255,0.25);
     display: flex; align-items: center; justify-content: center;
-    font-size: 28px;
-    box-shadow: 0 8px 20px rgba(0,0,0,0.35);
+    box-shadow: 0 12px 28px rgba(10, 132, 255, 0.35), inset 0 1px 0 rgba(255,255,255,0.3);
   }
-  .lock-card h1 { font-size: 21px; font-weight: 600; letter-spacing: -0.3px; margin-bottom: 6px; }
+  .lock-card h1 { font-size: 21px; font-weight: 700; letter-spacing: -0.35px; margin-bottom: 6px; }
   .lock-card p { font-size: 13px; color: var(--text-secondary); line-height: 1.45; margin-bottom: 22px; }
   .apple-input, .apple-select {
     width: 100%; height: 38px;
@@ -796,88 +839,69 @@ HTML_UI = """<!DOCTYPE html>
     border-radius: 10px;
     padding: 0 13px;
     color: var(--text-primary);
-    font-size: 14px;
+    font-size: 13.5px;
     outline: none;
     margin-bottom: 12px;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .apple-select { width: auto; height: 32px; margin-bottom: 0; font-size: 13px; }
+  .apple-select { width: auto; height: 32px; margin-bottom: 0; font-size: 12.5px; }
   .apple-input:focus {
     border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.25);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.22);
   }
-  .btn-primary {
-    width: 100%; height: 38px;
-    background: var(--accent);
-    color: #fff;
-    border: none;
-    border-radius: 10px;
-    font-size: 14px; font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .btn-primary:hover { background: var(--accent-hover); }
-  .btn-touchid {
-    width: 100%; height: 38px;
-    margin-top: 10px;
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    font-size: 13.5px; font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s;
-  }
-  .btn-touchid:hover { background: rgba(255, 255, 255, 0.14); }
+  .btn-full { width: 100%; height: 38px; font-size: 13.5px; font-weight: 600; border-radius: 10px; }
   .error-msg { color: var(--danger); font-size: 12px; margin-top: 10px; min-height: 16px; }
 
   /* QUICK-FILL SPOTLIGHT OVERLAY */
   #quick-overlay {
     position: fixed; inset: 0;
-    background: rgba(10, 10, 12, 0.72);
-    backdrop-filter: blur(18px);
+    background: rgba(8, 8, 10, 0.72);
+    backdrop-filter: blur(20px);
     display: none;
     align-items: flex-start;
     justify-content: center;
-    padding-top: 72px;
+    padding-top: 68px;
     z-index: 40;
   }
   .spotlight-box {
-    width: 520px;
-    background: #222226;
-    border: 1px solid rgba(255,255,255,0.16);
+    width: 530px;
+    background: #1e1e23;
+    border: 1px solid var(--border-highlight);
     border-radius: 16px;
-    box-shadow: 0 28px 70px rgba(0,0,0,0.7);
+    box-shadow: 0 32px 80px rgba(0,0,0,0.75), inset 0 1px 0 rgba(255,255,255,0.08);
     overflow: hidden;
   }
   .spotlight-top {
-    display: flex; align-items: center; padding: 14px 18px;
+    display: flex; align-items: center; gap: 10px; padding: 14px 18px;
     border-bottom: 1px solid var(--border);
   }
   .spotlight-input {
     flex: 1; background: transparent; border: none; outline: none;
-    color: var(--text-primary); font-size: 17px;
+    color: var(--text-primary); font-size: 16px;
   }
-  .spotlight-hint { font-size: 11px; color: var(--text-secondary); background: var(--bg-input); padding: 3px 8px; border-radius: 6px; }
-  .spotlight-results { max-height: 300px; overflow-y: auto; padding: 8px; }
+  .kbd-chip {
+    font-size: 11px; font-weight: 600; color: var(--text-secondary);
+    background: var(--bg-input); border: 1px solid var(--border);
+    padding: 2px 7px; border-radius: 6px;
+  }
+  .spotlight-results { max-height: 310px; overflow-y: auto; padding: 8px; }
   .spot-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 10px 12px; border-radius: 10px; cursor: pointer;
+    padding: 9px 12px; border-radius: 10px; cursor: pointer;
   }
   .spot-row.selected { background: var(--accent); }
   .spot-left { display: flex; align-items: center; gap: 12px; }
-  .spot-badge { font-size: 11px; opacity: 0.85; }
   .spotlight-footer {
-    padding: 9px 16px; background: #1a1a1d; border-top: 1px solid var(--border);
+    padding: 9px 16px; background: #16161a; border-top: 1px solid var(--border);
     display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-secondary);
   }
 
-  /* MAIN APP LAYOUT */
+  /* MAIN APP SHELL */
   #app-shell { display: none; width: 100%; height: 100vh; }
 
   /* SIDEBAR */
   .sidebar {
-    width: 288px;
+    width: 292px;
     background: var(--bg-sidebar);
     border-right: 1px solid var(--border);
     display: flex;
@@ -885,190 +909,219 @@ HTML_UI = """<!DOCTYPE html>
     height: 100%;
   }
   .sidebar-header {
-    padding: 42px 16px 10px;
+    padding: 40px 14px 10px;
     -webkit-app-region: drag;
   }
   .brand-row {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 12px;
+    margin-bottom: 11px;
     -webkit-app-region: no-drag;
   }
-  .brand-title { font-size: 17px; font-weight: 700; letter-spacing: -0.3px; }
-  .pill-btn {
-    background: var(--bg-input);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 5px 10px;
-    font-size: 12px; font-weight: 500;
-    cursor: pointer;
-    transition: background 0.15s;
+  .brand-left { display: flex; align-items: center; gap: 8px; }
+  .brand-dot {
+    width: 20px; height: 20px; border-radius: 6px;
+    background: linear-gradient(145deg, #0a84ff, #0055b3);
+    display: flex; align-items: center; justify-content: center;
   }
-  .pill-btn:hover { background: #38383e; }
+  .brand-title { font-size: 15.5px; font-weight: 700; letter-spacing: -0.3px; }
 
-  .search-wrap { position: relative; -webkit-app-region: no-drag; margin-bottom: 10px; }
+  .search-wrap { position: relative; -webkit-app-region: no-drag; margin-bottom: 9px; }
   .search-input {
-    width: 100%; height: 32px;
-    background: var(--bg-input);
-    border: 1px solid transparent;
+    width: 100%; height: 31px;
+    background: rgba(255,255,255,0.055);
+    border: 1px solid var(--border);
     border-radius: 8px;
     padding: 0 12px 0 30px;
     color: var(--text-primary);
-    font-size: 13px;
+    font-size: 12.5px;
     outline: none;
+    transition: all 0.15s;
   }
-  .search-input:focus { border-color: var(--accent); }
+  .search-input:focus {
+    background: var(--bg-input);
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(10, 132, 255, 0.18);
+  }
   .search-icon {
     position: absolute; left: 10px; top: 8px;
-    font-size: 12px; color: var(--text-secondary); pointer-events: none;
+    color: var(--text-secondary); pointer-events: none;
   }
 
-  .nav-pills {
-    display: flex; gap: 6px; -webkit-app-region: no-drag;
+  /* SEGMENTED FILTER TABS */
+  .filter-tabs {
+    display: flex; background: rgba(0,0,0,0.28); padding: 2.5px;
+    border-radius: 8px; border: 1px solid var(--border);
+    margin-bottom: 8px; -webkit-app-region: no-drag;
   }
+  .ftab {
+    flex: 1; padding: 4px 6px; border: none; border-radius: 6px;
+    background: transparent; color: var(--text-secondary);
+    font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.14s;
+  }
+  .ftab.active { background: #2e2e35; color: var(--text-primary); box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
+
+  /* TOOL NAV PILLS */
+  .nav-pills { display: flex; gap: 6px; -webkit-app-region: no-drag; }
   .nav-pill {
-    flex: 1; padding: 6px 8px; border-radius: 8px;
-    background: var(--bg-input); border: 1px solid var(--border);
+    flex: 1; display: flex; align-items: center; justify-content: center; gap: 5px;
+    padding: 6px 8px; border-radius: 8px;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--border);
     color: var(--text-secondary); font-size: 11.5px; font-weight: 600;
-    cursor: pointer; text-align: center; transition: all 0.15s;
+    cursor: pointer; transition: all 0.14s;
   }
-  .nav-pill:hover { color: var(--text-primary); background: #34343a; }
-  .nav-pill.active-nav { background: rgba(10, 132, 255, 0.18); color: var(--accent); border-color: rgba(10, 132, 255, 0.35); }
+  .nav-pill:hover { color: var(--text-primary); background: rgba(255,255,255,0.08); }
+  .nav-pill.active-nav {
+    background: var(--accent-soft);
+    color: #5ac8fa;
+    border-color: rgba(10, 132, 255, 0.35);
+  }
 
   .item-list {
     flex: 1;
     overflow-y: auto;
-    padding: 6px 10px;
+    padding: 4px 10px 10px;
   }
-  .item-list::-webkit-scrollbar { width: 6px; }
-  .item-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.14); border-radius: 3px; }
+  .item-list::-webkit-scrollbar { width: 5px; }
+  .item-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
 
   .vault-item {
     display: flex; align-items: center; gap: 11px;
-    padding: 9px 10px;
+    padding: 8px 10px;
     border-radius: 10px;
     cursor: pointer;
     margin-bottom: 2px;
-    transition: background 0.12s;
+    transition: background 0.1s ease;
   }
-  .vault-item:hover { background: var(--bg-hover); }
-  .vault-item.active { background: var(--accent); }
-  .avatar {
+  .vault-item:hover { background: rgba(255,255,255,0.05); }
+  .vault-item.active {
+    background: var(--accent);
+    box-shadow: 0 2px 8px rgba(10, 132, 255, 0.28);
+  }
+  .squircle {
     width: 34px; height: 34px;
-    border-radius: 9px;
+    border-radius: 10px;
     display: flex; align-items: center; justify-content: center;
-    font-weight: 600; font-size: 14px; color: #fff;
+    font-weight: 700; font-size: 14px; color: #fff;
     flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.16);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.22);
   }
   .item-meta { overflow: hidden; flex: 1; }
   .item-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .item-sub { font-size: 11.5px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .vault-item.active .item-sub { color: rgba(255,255,255,0.82); }
+  .vault-item.active .item-sub { color: rgba(255,255,255,0.85); }
   .star-badge { font-size: 12px; color: var(--warning); flex-shrink: 0; }
 
   .sidebar-footer {
-    padding: 12px 14px;
+    padding: 11px 12px;
     border-top: 1px solid var(--border);
-    display: flex; gap: 6px;
+    background: rgba(0,0,0,0.14);
+    display: flex; gap: 7px;
   }
-  .btn-add {
-    flex: 1; height: 32px;
-    background: var(--accent);
-    color: #fff; border: none; border-radius: 8px;
-    font-size: 12.5px; font-weight: 500; cursor: pointer;
-  }
-  .btn-add:hover { background: var(--accent-hover); }
 
-  /* DETAIL PANE */
+  /* DETAIL & MAIN WORKSPACE */
   .main-pane {
     flex: 1;
     display: flex;
     flex-direction: column;
     overflow-y: auto;
-    padding: 44px 42px 36px;
+    padding: 42px 44px 38px;
+    background: radial-gradient(700px circle at 80% 0%, rgba(10, 132, 255, 0.045), transparent 60%);
     -webkit-app-region: drag;
   }
-  .main-content { max-width: 630px; width: 100%; margin: 0 auto; -webkit-app-region: no-drag; }
+  .main-pane::-webkit-scrollbar { width: 6px; }
+  .main-pane::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+  .main-content { max-width: 640px; width: 100%; margin: 0 auto; -webkit-app-region: no-drag; }
 
   .empty-state {
-    height: 100%; display: flex; flex-direction: column;
+    height: 75vh; display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     color: var(--text-secondary); text-align: center;
-    -webkit-app-region: no-drag;
   }
-  .empty-state .big-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+  .empty-icon-wrap {
+    width: 64px; height: 64px; border-radius: 18px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 14px; color: var(--text-secondary);
+  }
 
   .detail-top {
     display: flex; align-items: center; justify-content: space-between;
-    margin-bottom: 24px;
+    margin-bottom: 24px; gap: 12px;
   }
-  .detail-header-left { display: flex; align-items: center; gap: 16px; }
-  .detail-avatar {
-    width: 52px; height: 52px; border-radius: 14px;
+  .detail-header-left { display: flex; align-items: center; gap: 16px; min-width: 0; }
+  .detail-squircle {
+    width: 54px; height: 54px; border-radius: 15px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 22px; font-weight: 700; color: #fff;
+    font-size: 22px; font-weight: 700; color: #fff; flex-shrink: 0;
+    border: 1px solid rgba(255,255,255,0.2);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.25);
   }
-  .detail-title { font-size: 24px; font-weight: 700; letter-spacing: -0.4px; }
+  .detail-title {
+    font-size: 23px; font-weight: 700; letter-spacing: -0.45px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .badge-row { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+  .pill-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 600;
+    padding: 2.5px 9px; border-radius: 99px;
+    background: rgba(48, 209, 88, 0.14); color: var(--success);
+  }
+  .pill-badge.warn { background: rgba(255, 159, 10, 0.16); color: var(--orange); }
+  .pill-badge.fair { background: rgba(255, 214, 10, 0.14); color: var(--warning); }
+  .pill-badge.blue { background: var(--accent-soft); color: #5ac8fa; }
+
+  .action-group { display: flex; gap: 7px; flex-shrink: 0; }
+
   .section-heading {
-    font-size: 12px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.5px; color: var(--text-secondary);
-    margin: 20px 0 8px 4px;
+    font-size: 11.5px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.6px; color: var(--text-secondary);
+    margin: 22px 0 8px 4px;
   }
-  .strength-pill, .status-pill {
-    display: inline-block; font-size: 11px; font-weight: 600;
-    padding: 3px 9px; border-radius: 99px;
-    background: rgba(48, 209, 88, 0.15); color: var(--success);
-  }
-  .strength-pill { margin-top: 4px; }
-  .strength-pill.weak, .status-pill.warn { background: rgba(255, 159, 10, 0.18); color: #ff9f0a; }
-  .strength-pill.fair { background: rgba(255, 214, 10, 0.15); color: var(--warning); }
 
-  .action-group { display: flex; gap: 8px; }
-  .btn-autofill {
-    background: rgba(10, 132, 255, 0.16);
-    color: var(--accent);
-    border: 1px solid rgba(10, 132, 255, 0.3);
-    border-radius: 8px; padding: 6px 12px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-  }
-  .btn-autofill:hover { background: rgba(10, 132, 255, 0.28); }
-  .btn-danger {
-    background: rgba(255, 69, 58, 0.14);
-    color: var(--danger);
-    border: 1px solid rgba(255, 69, 58, 0.25);
-    border-radius: 8px; padding: 6px 12px; font-size: 12.5px; font-weight: 500; cursor: pointer;
-  }
-  .btn-danger:hover { background: rgba(255, 69, 58, 0.25); }
-
-  /* GROUPED APPLE CARD */
+  /* ELEVATED GROUPED APPLE CARDS */
   .group-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.04);
     border-radius: 14px;
     overflow: hidden;
     margin-bottom: 16px;
   }
   .field-row {
     display: flex; align-items: center; justify-content: space-between;
-    padding: 14px 18px;
+    padding: 13px 18px;
     border-bottom: 1px solid var(--border);
+    transition: background 0.12s;
   }
+  .field-row:hover { background: rgba(255,255,255,0.02); }
   .field-row:last-child { border-bottom: none; }
-  .field-label { font-size: 13px; font-weight: 500; color: var(--text-primary); margin-bottom: 2px; }
+  .field-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: 3px; }
+  .field-title-main { font-size: 13.5px; font-weight: 500; color: var(--text-primary); margin-bottom: 2px; }
   .field-sub { font-size: 11.5px; color: var(--text-secondary); line-height: 1.4; }
   .field-value { font-size: 14px; font-weight: 500; word-break: break-all; }
   .mono { font-family: "SF Mono", Menlo, monospace; letter-spacing: 0.4px; }
-  .totp-code { font-family: "SF Mono", Menlo, monospace; font-size: 18px; font-weight: 700; color: var(--accent); }
   .field-actions { display: flex; gap: 6px; flex-shrink: 0; margin-left: 14px; align-items: center; }
+
+  /* TOTP RING & CODE */
+  .totp-wrap { display: flex; align-items: center; gap: 12px; }
+  .totp-code {
+    font-family: "SF Mono", Menlo, monospace; font-size: 19px; font-weight: 700;
+    color: #5ac8fa; letter-spacing: 1px; cursor: pointer;
+  }
+  .totp-ring { transform: rotate(-90deg); }
 
   /* WATCHTOWER DASHBOARD */
   .wt-grid {
     display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 18px;
   }
   .wt-stat {
-    background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
-    padding: 14px; text-align: center;
+    background: var(--bg-card); border: 1px solid var(--border);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+    border-radius: 14px; padding: 15px 12px; text-align: center;
   }
-  .wt-num { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+  .wt-num { font-size: 25px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 3px; }
   .wt-lbl { font-size: 11.5px; color: var(--text-secondary); }
 
   /* 1PASSWORD-STYLE GENERATOR */
@@ -1081,20 +1134,21 @@ HTML_UI = """<!DOCTYPE html>
     background: transparent; color: var(--text-secondary);
     font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
   }
-  .seg-btn.active { background: #3a3a40; color: var(--text-primary); box-shadow: 0 2px 6px rgba(0,0,0,0.25); }
+  .seg-btn.active { background: #383842; color: var(--text-primary); box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
 
   .gen-hero {
-    background: #1a1a1d; border: 1px solid var(--border); border-radius: 14px;
+    background: #17171b; border: 1px solid var(--border-highlight); border-radius: 14px;
     padding: 20px; margin-bottom: 16px;
+    box-shadow: inset 0 2px 10px rgba(0,0,0,0.35);
   }
   .gen-display {
     font-family: "SF Mono", Menlo, monospace; font-size: 20px; font-weight: 600;
-    line-height: 1.5; word-break: break-all; min-height: 62px;
+    line-height: 1.55; word-break: break-all; min-height: 64px;
     display: flex; align-items: center; flex-wrap: wrap;
     margin-bottom: 14px; -webkit-user-select: text;
   }
   .ch-num { color: #64d2ff; }
-  .ch-sym { color: var(--symbol-orange); }
+  .ch-sym { color: var(--orange); }
   .strength-bar-track {
     height: 5px; background: var(--bg-input); border-radius: 99px; overflow: hidden; margin-bottom: 14px;
   }
@@ -1106,11 +1160,12 @@ HTML_UI = """<!DOCTYPE html>
   .switch input { opacity: 0; width: 0; height: 0; }
   .slider {
     position: absolute; cursor: pointer; inset: 0;
-    background-color: #3a3a3f; transition: .2s; border-radius: 24px;
+    background-color: #383840; transition: .2s; border-radius: 24px;
   }
   .slider:before {
     position: absolute; content: ""; height: 20px; width: 20px;
     left: 2px; bottom: 2px; background-color: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
     transition: .2s; border-radius: 50%;
   }
   input:checked + .slider { background-color: var(--success); }
@@ -1118,7 +1173,7 @@ HTML_UI = """<!DOCTYPE html>
 
   /* FORM */
   .form-group { margin-bottom: 14px; }
-  .form-group label { display: block; font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+  .form-group label { display: block; font-size: 12px; font-weight: 500; color: var(--text-secondary); margin-bottom: 6px; }
   .pw-gen-row { display: flex; gap: 8px; align-items: center; }
   .pw-gen-row .apple-input { margin-bottom: 0; }
   .gen-opts { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 12px; color: var(--text-secondary); }
@@ -1127,11 +1182,12 @@ HTML_UI = """<!DOCTYPE html>
   /* TOAST */
   .toast {
     position: fixed; bottom: 20px; right: 24px;
-    background: rgba(44, 44, 48, 0.95);
-    border: 1px solid var(--border);
+    background: rgba(38, 38, 44, 0.96);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border-highlight);
     padding: 9px 16px; border-radius: 10px;
     font-size: 12.5px; font-weight: 500;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+    box-shadow: 0 12px 30px rgba(0,0,0,0.45);
     opacity: 0; transform: translateY(8px);
     transition: opacity 0.2s, transform 0.2s;
     pointer-events: none;
@@ -1145,13 +1201,21 @@ HTML_UI = """<!DOCTYPE html>
   <!-- LOCK / SETUP SCREEN -->
   <div id="lock-screen">
     <div class="lock-card">
-      <div class="lock-badge">🔒</div>
+      <div class="lock-shield">
+        <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+          <rect x="9" y="10" width="6" height="5" rx="1"/>
+          <path d="M10 10V8a2 2 0 1 1 4 0v2"/>
+        </svg>
+      </div>
       <h1 id="lock-title">Voltes IIV</h1>
       <p id="lock-subtitle">Enter your Master Password to unlock your local encrypted vault.</p>
       <input id="master-pw" type="password" class="apple-input" placeholder="Master Password" autofocus />
       <input id="confirm-pw" type="password" class="apple-input" placeholder="Confirm Master Password" style="display:none;" />
-      <button id="unlock-btn" class="btn-primary">Unlock Vault</button>
-      <button id="touchid-btn" class="btn-touchid" style="display:none;" onclick="handleTouchID()">􀟒 Unlock with Touch ID / Mac Password</button>
+      <button id="unlock-btn" class="btn btn-accent btn-full">Unlock Vault</button>
+      <button id="touchid-btn" class="btn btn-full" style="display:none; margin-top:10px;" onclick="handleTouchID()">
+        Unlock with Touch ID / Mac Password
+      </button>
       <div id="lock-error" class="error-msg"></div>
     </div>
   </div>
@@ -1160,13 +1224,16 @@ HTML_UI = """<!DOCTYPE html>
   <div id="quick-overlay" onclick="if(event.target===this) closeQuickFill()">
     <div class="spotlight-box">
       <div class="spotlight-top">
-        <input id="spot-input" class="spotlight-input" placeholder="Type site or app name to Auto-Type..." />
-        <span class="spotlight-hint">⌘⇧L</span>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#8e8e95" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        <input id="spot-input" class="spotlight-input" placeholder="Search vault to Auto-Type..." />
+        <span class="kbd-chip">⌘⇧L</span>
       </div>
       <div id="spot-results" class="spotlight-results"></div>
       <div class="spotlight-footer">
-        <span><b>↵ Enter</b> Auto-Type User + Pass</span>
-        <span><b>⇧↵ Shift+Enter</b> Copy Pass &nbsp;|&nbsp; <b>Esc</b> Close</span>
+        <span><b>↵ Return</b> Auto-Type User + Pass</span>
+        <span><b>⇧↵ Shift+Return</b> Copy Pass &nbsp;·&nbsp; <b>Esc</b> Close</span>
       </div>
     </div>
   </div>
@@ -1176,25 +1243,58 @@ HTML_UI = """<!DOCTYPE html>
     <aside class="sidebar">
       <div class="sidebar-header">
         <div class="brand-row">
-          <span class="brand-title">Voltes IIV</span>
-          <div style="display:flex; gap:6px;">
-            <button class="pill-btn" onclick="openQuickFill()" title="Shortcut: Command + Shift + L">Quick Fill</button>
-            <button class="pill-btn" onclick="lockVault()" title="Shortcut: Command + L">Lock</button>
+          <div class="brand-left">
+            <div class="brand-dot">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              </svg>
+            </div>
+            <span class="brand-title">Voltes IIV</span>
+          </div>
+          <div style="display:flex; gap:5px;">
+            <button class="btn" onclick="openQuickFill()" title="Quick Fill (⌘⇧L)">Quick Fill</button>
+            <button class="btn icon-btn" onclick="lockVault()" title="Lock Vault (⌘L)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </button>
           </div>
         </div>
+
         <div class="search-wrap">
-          <span class="search-icon">🔍</span>
+          <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
           <input id="search-input" class="search-input" type="text" placeholder="Search (⌘F)" oninput="renderSidebar()" />
         </div>
+
+        <div class="filter-tabs">
+          <button id="ftab-all" class="ftab active" onclick="setFilterTab('all')">All</button>
+          <button id="ftab-fav" class="ftab" onclick="setFilterTab('fav')">Pinned ★</button>
+          <button id="ftab-2fa" class="ftab" onclick="setFilterTab('2fa')">2FA</button>
+        </div>
+
         <div class="nav-pills">
-          <button id="nav-gen" class="nav-pill" onclick="openGenerator()" title="Shortcut: Command + G">Generator</button>
-          <button id="nav-wt" class="nav-pill" onclick="openWatchtower()" title="Shortcut: Command + W">Watchtower</button>
+          <button id="nav-gen" class="nav-pill" onclick="openGenerator()" title="Password Generator (⌘G)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
+            </svg>
+            Generator
+          </button>
+          <button id="nav-wt" class="nav-pill" onclick="openWatchtower()" title="Watchtower Security Audit (⌘W)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>
+            </svg>
+            Watchtower
+          </button>
         </div>
       </div>
+
       <div id="item-list" class="item-list"></div>
+
       <div class="sidebar-footer">
-        <button class="btn-add" onclick="openForm()" title="Shortcut: Command + N">+ New Login</button>
-        <button id="nav-set" class="pill-btn" onclick="openSettings()" title="Shortcut: Command + ,">Settings</button>
+        <button class="btn btn-accent" style="flex:1; height:32px; font-weight:600;" onclick="openForm()" title="New Login (⌘N)">+ New Login</button>
+        <button id="nav-set" class="btn" style="height:32px;" onclick="openSettings()" title="Settings (⌘,)">Settings</button>
       </div>
     </aside>
 
@@ -1209,7 +1309,8 @@ HTML_UI = """<!DOCTYPE html>
   let entries = [];
   let appSettings = { auto_lock_seconds: 180, auto_submit: false, clear_clipboard_seconds: 20, touch_id_enabled: false };
   let activeIndex = null;
-  let currentView = "detail"; // detail | generator | watchtower | settings | form
+  let filterTab = "all"; // all | fav | 2fa
+  let currentView = "detail";
   let revealPw = false;
   let showHistory = false;
   let isNewVault = false;
@@ -1232,11 +1333,19 @@ HTML_UI = """<!DOCTYPE html>
     bits: 120
   };
 
-  const colors = ["#0a84ff", "#30d158", "#bf5af2", "#ff9f0a", "#ff375f", "#5e5ce6", "#64d2ff"];
-  function avatarColor(str) {
+  const gradients = [
+    "linear-gradient(145deg, #0a84ff, #005bb5)",
+    "linear-gradient(145deg, #30d158, #1e8e3e)",
+    "linear-gradient(145deg, #bf5af2, #8932b8)",
+    "linear-gradient(145deg, #ff9f0a, #c77400)",
+    "linear-gradient(145deg, #ff375f, #b81d3d)",
+    "linear-gradient(145deg, #5e5ce6, #3b39a8)",
+    "linear-gradient(145deg, #32ade6, #1875a3)"
+  ];
+  function avatarGradient(str) {
     let h = 0;
     for (let i = 0; i < str.length; i++) h = str.charCodeAt(i) + ((h << 5) - h);
-    return colors[Math.abs(h) % colors.length];
+    return gradients[Math.abs(h) % gradients.length];
   }
 
   function showToast(msg) {
@@ -1252,17 +1361,50 @@ HTML_UI = """<!DOCTYPE html>
     document.getElementById("nav-wt").classList.toggle("active-nav", view === "watchtower");
   }
 
+  function setFilterTab(tab) {
+    filterTab = tab;
+    document.getElementById("ftab-all").classList.toggle("active", tab === "all");
+    document.getElementById("ftab-fav").classList.toggle("active", tab === "fav");
+    document.getElementById("ftab-2fa").classList.toggle("active", tab === "2fa");
+    renderSidebar();
+  }
+
   function touchActivity() { lastActivity = Date.now(); }
   document.addEventListener("mousemove", touchActivity);
   document.addEventListener("keydown", (e) => {
     touchActivity();
-    if (document.getElementById("app-shell").style.display === "flex" && e.metaKey) {
-      if (e.key.toLowerCase() === "n") { e.preventDefault(); openForm(); }
-      else if (e.key.toLowerCase() === "g") { e.preventDefault(); openGenerator(); }
-      else if (e.key.toLowerCase() === "w") { e.preventDefault(); openWatchtower(); }
-      else if (e.key.toLowerCase() === "f") { e.preventDefault(); document.getElementById("search-input").focus(); }
-      else if (e.key.toLowerCase() === "l" && !e.shiftKey) { e.preventDefault(); lockVault(); }
-      else if (e.key === ",") { e.preventDefault(); openSettings(); }
+    if (document.getElementById("app-shell").style.display !== "flex") return;
+
+    // Keyboard shortcuts
+    if (e.metaKey) {
+      if (e.key.toLowerCase() === "n") { e.preventDefault(); openForm(); return; }
+      if (e.key.toLowerCase() === "g") { e.preventDefault(); openGenerator(); return; }
+      if (e.key.toLowerCase() === "w") { e.preventDefault(); openWatchtower(); return; }
+      if (e.key.toLowerCase() === "f") { e.preventDefault(); document.getElementById("search-input").focus(); return; }
+      if (e.key.toLowerCase() === "l" && !e.shiftKey) { e.preventDefault(); lockVault(); return; }
+      if (e.key === ",") { e.preventDefault(); openSettings(); return; }
+      if (e.key.toLowerCase() === "c" && currentView === "detail" && activeIndex !== null && !window.getSelection().toString()) {
+        e.preventDefault();
+        copyField("password");
+        return;
+      }
+    }
+
+    // Arrow key navigation through vault list
+    const tag = (document.activeElement && document.activeElement.tagName) || "";
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT") {
+      const visible = getFilteredIndices();
+      if (visible.length === 0) return;
+      e.preventDefault();
+      const pos = visible.indexOf(activeIndex);
+      const nextPos = e.key === "ArrowDown"
+        ? (pos + 1) % visible.length
+        : (pos - 1 + visible.length) % visible.length;
+      activeIndex = visible[nextPos];
+      revealPw = false;
+      showHistory = false;
+      renderSidebar();
+      renderDetail();
     }
   });
 
@@ -1287,6 +1429,7 @@ HTML_UI = """<!DOCTYPE html>
     }
   };
 
+  // Live TOTP ring + inactivity auto-lock loop
   setInterval(async () => {
     if (document.getElementById("app-shell").style.display === "flex") {
       const lockMs = (appSettings.auto_lock_seconds || 0) * 1000;
@@ -1296,10 +1439,19 @@ HTML_UI = """<!DOCTYPE html>
       }
       if (currentView === "detail" && activeIndex !== null && entries[activeIndex] && entries[activeIndex].totp) {
         const res = await pywebview.api.get_totp(entries[activeIndex].totp);
-        const el = document.getElementById("live-totp");
-        if (el && res) {
+        const codeEl = document.getElementById("live-totp");
+        const ringEl = document.getElementById("totp-circle");
+        const secEl = document.getElementById("totp-sec");
+        if (codeEl && res) {
           const fmt = res.code.length === 6 ? res.code.slice(0,3) + " " + res.code.slice(3) : res.code;
-          el.textContent = `${fmt}  (${res.remaining}s)`;
+          codeEl.textContent = fmt;
+          if (secEl) secEl.textContent = res.remaining + "s";
+          if (ringEl) {
+            const circumference = 69.115; // 2 * pi * 11
+            const offset = circumference * (1 - (res.remaining / 30));
+            ringEl.style.strokeDashoffset = offset;
+            ringEl.style.stroke = res.remaining <= 5 ? "var(--orange)" : "#5ac8fa";
+          }
         }
       }
     }
@@ -1307,7 +1459,7 @@ HTML_UI = """<!DOCTYPE html>
 
   async function refreshLockScreenBiometrics() {
     const canTouch = await pywebview.api.can_use_touch_id();
-    document.getElementById("touchid-btn").style.display = canTouch ? "block" : "none";
+    document.getElementById("touchid-btn").style.display = canTouch ? "inline-flex" : "none";
   }
 
   window.addEventListener("pywebviewready", async () => {
@@ -1330,7 +1482,7 @@ HTML_UI = """<!DOCTYPE html>
     document.getElementById("lock-screen").style.display = "none";
     document.getElementById("app-shell").style.display = "flex";
     touchActivity();
-    const sorted = getSortedIndices();
+    const sorted = getFilteredIndices();
     activeIndex = sorted.length > 0 ? sorted[0] : null;
     renderSidebar();
     renderDetail();
@@ -1399,6 +1551,17 @@ HTML_UI = """<!DOCTYPE html>
       .map(x => x.idx);
   }
 
+  function getFilteredIndices() {
+    const q = (document.getElementById("search-input").value || "").toLowerCase().trim();
+    return getSortedIndices().filter(idx => {
+      const item = entries[idx];
+      if (filterTab === "fav" && !item.favorite) return false;
+      if (filterTab === "2fa" && !(item.totp || "").trim()) return false;
+      if (q && !item.title.toLowerCase().includes(q) && !(item.username || "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }
+
   /* WATCHTOWER SECURITY AUDIT */
   async function openWatchtower() {
     activeIndex = null;
@@ -1416,12 +1579,12 @@ HTML_UI = """<!DOCTYPE html>
         return `
           <div class="field-row" style="cursor:pointer;" onclick="activeIndex=${idx}; revealPw=false; showHistory=false; renderSidebar(); renderDetail();">
             <div>
-              <div class="field-label">${escapeHtml(item.title)}</div>
+              <div class="field-title-main">${escapeHtml(item.title)}</div>
               <div class="field-sub">${escapeHtml(item.username || "No username")}</div>
             </div>
             <div class="field-actions">
-              <span class="status-pill ${badgeCls}">${badgeText}</span>
-              <button class="pill-btn" onclick="event.stopPropagation(); openForm(${idx});">Fix</button>
+              <span class="pill-badge ${badgeCls}">${badgeText}</span>
+              <button class="btn" onclick="event.stopPropagation(); openForm(${idx});">Fix</button>
             </div>
           </div>
         `;
@@ -1433,7 +1596,7 @@ HTML_UI = """<!DOCTYPE html>
     pane.innerHTML = `
       <div class="detail-top">
         <div class="detail-title">Watchtower Audit</div>
-        <button class="pill-btn" onclick="const s=getSortedIndices();if(s.length>0){activeIndex=s[0];renderSidebar();}renderDetail();">Done</button>
+        <button class="btn" onclick="const s=getFilteredIndices();if(s.length>0){activeIndex=s[0];renderSidebar();}renderDetail();">Done</button>
       </div>
 
       <div class="wt-grid">
@@ -1446,11 +1609,11 @@ HTML_UI = """<!DOCTYPE html>
           <div class="wt-lbl">Reused</div>
         </div>
         <div class="wt-stat">
-          <div class="wt-num" style="color:${rep.weak.length ? '#ff9f0a' : 'var(--text-primary)'};">${rep.weak.length}</div>
+          <div class="wt-num" style="color:${rep.weak.length ? 'var(--orange)' : 'var(--text-primary)'};">${rep.weak.length}</div>
           <div class="wt-lbl">Weak</div>
         </div>
         <div class="wt-stat">
-          <div class="wt-num" style="color:var(--accent);">${rep.no_2fa.length}</div>
+          <div class="wt-num" style="color:#5ac8fa;">${rep.no_2fa.length}</div>
           <div class="wt-lbl">Missing 2FA</div>
         </div>
       </div>
@@ -1462,7 +1625,7 @@ HTML_UI = """<!DOCTYPE html>
       <div class="group-card">${buildAuditList(rep.weak, "Weak", "warn")}</div>
 
       <div class="section-heading">Accounts Without 2FA (${rep.no_2fa.length})</div>
-      <div class="group-card">${buildAuditList(rep.no_2fa, "No 2FA", "")}</div>
+      <div class="group-card">${buildAuditList(rep.no_2fa, "No 2FA", "blue")}</div>
     `;
   }
 
@@ -1490,13 +1653,13 @@ HTML_UI = """<!DOCTYPE html>
       bar.style.width = pct + "%";
       if (res.bits >= 80) {
         bar.style.background = "var(--success)";
-        lbl.textContent = `Strong (${res.bits}-bit entropy)`;
+        lbl.textContent = `Strong · ${res.bits}-bit entropy`;
       } else if (res.bits >= 55) {
         bar.style.background = "var(--warning)";
-        lbl.textContent = `Good (${res.bits}-bit entropy)`;
+        lbl.textContent = `Good · ${res.bits}-bit entropy`;
       } else {
         bar.style.background = "var(--danger)";
-        lbl.textContent = `Fair (${res.bits}-bit entropy)`;
+        lbl.textContent = `Fair · ${res.bits}-bit entropy`;
       }
     }
   }
@@ -1511,7 +1674,7 @@ HTML_UI = """<!DOCTYPE html>
       <div class="group-card">
         <div class="field-row">
           <div>
-            <div class="field-label">Characters: <span id="g-len-txt" style="color:var(--accent);">${genState.length}</span></div>
+            <div class="field-title-main">Characters: <span id="g-len-txt" style="color:#5ac8fa;">${genState.length}</span></div>
             <div class="field-sub">Recommended: 16 to 24 characters</div>
           </div>
           <div class="field-actions" style="width:200px;">
@@ -1521,9 +1684,7 @@ HTML_UI = """<!DOCTYPE html>
         </div>
 
         <div class="field-row">
-          <div>
-            <div class="field-label">Numbers (0-9)</div>
-          </div>
+          <div><div class="field-title-main">Numbers (0-9)</div></div>
           <div class="field-actions">
             <label class="switch">
               <input type="checkbox" ${genState.numbers ? "checked" : ""} onchange="genState.numbers=this.checked; refreshGeneratedPassword();">
@@ -1533,9 +1694,7 @@ HTML_UI = """<!DOCTYPE html>
         </div>
 
         <div class="field-row">
-          <div>
-            <div class="field-label">Symbols (!@#$%^&*)</div>
-          </div>
+          <div><div class="field-title-main">Symbols (!@#$%^&*)</div></div>
           <div class="field-actions">
             <label class="switch">
               <input type="checkbox" ${genState.symbols ? "checked" : ""} onchange="genState.symbols=this.checked; refreshGeneratedPassword();">
@@ -1546,7 +1705,7 @@ HTML_UI = """<!DOCTYPE html>
 
         <div class="field-row">
           <div>
-            <div class="field-label">Avoid Ambiguous Characters</div>
+            <div class="field-title-main">Avoid Ambiguous Characters</div>
             <div class="field-sub">Excludes 0, O, 1, l, I for easy manual typing</div>
           </div>
           <div class="field-actions">
@@ -1561,7 +1720,7 @@ HTML_UI = """<!DOCTYPE html>
       <div class="group-card">
         <div class="field-row">
           <div>
-            <div class="field-label">Words: <span id="g-words-txt" style="color:var(--accent);">${genState.words}</span></div>
+            <div class="field-title-main">Words: <span id="g-words-txt" style="color:#5ac8fa;">${genState.words}</span></div>
             <div class="field-sub">4+ words creates a high-entropy passphrase</div>
           </div>
           <div class="field-actions" style="width:200px;">
@@ -1571,9 +1730,7 @@ HTML_UI = """<!DOCTYPE html>
         </div>
 
         <div class="field-row">
-          <div>
-            <div class="field-label">Separator</div>
-          </div>
+          <div><div class="field-title-main">Separator</div></div>
           <div class="field-actions">
             <select class="apple-select" onchange="genState.separator=this.value; refreshGeneratedPassword();">
               <option value="-" ${genState.separator==="-"?"selected":""}>Hyphen ( - )</option>
@@ -1585,9 +1742,7 @@ HTML_UI = """<!DOCTYPE html>
         </div>
 
         <div class="field-row">
-          <div>
-            <div class="field-label">Capitalize Words</div>
-          </div>
+          <div><div class="field-title-main">Capitalize Words</div></div>
           <div class="field-actions">
             <label class="switch">
               <input type="checkbox" ${genState.capitalize ? "checked" : ""} onchange="genState.capitalize=this.checked; refreshGeneratedPassword();">
@@ -1597,9 +1752,7 @@ HTML_UI = """<!DOCTYPE html>
         </div>
 
         <div class="field-row">
-          <div>
-            <div class="field-label">Include Number</div>
-          </div>
+          <div><div class="field-title-main">Include Number</div></div>
           <div class="field-actions">
             <label class="switch">
               <input type="checkbox" ${genState.include_number ? "checked" : ""} onchange="genState.include_number=this.checked; refreshGeneratedPassword();">
@@ -1613,7 +1766,7 @@ HTML_UI = """<!DOCTYPE html>
     pane.innerHTML = `
       <div class="detail-top">
         <div class="detail-title">Password Generator</div>
-        <button class="btn-autofill" onclick="openForm(null, genState.currentPassword)">+ Save as New Login</button>
+        <button class="btn btn-soft-accent" onclick="openForm(null, genState.currentPassword)">+ Save as New Login</button>
       </div>
 
       <div class="seg-control">
@@ -1627,8 +1780,8 @@ HTML_UI = """<!DOCTYPE html>
         <div class="gen-hero-footer">
           <span id="gen-strength-label" style="font-size:12px; color:var(--text-secondary);">Strong</span>
           <div style="display:flex; gap:8px;">
-            <button class="pill-btn" onclick="refreshGeneratedPassword()">↻ Regenerate</button>
-            <button class="btn-primary" style="width:auto; height:30px; padding:0 14px; font-size:12.5px;" onclick="copyGeneratedPassword()">Copy Password</button>
+            <button class="btn" onclick="refreshGeneratedPassword()">↻ Regenerate</button>
+            <button class="btn btn-accent" onclick="copyGeneratedPassword()">Copy Password</button>
           </div>
         </div>
       </div>
@@ -1671,7 +1824,7 @@ HTML_UI = """<!DOCTYPE html>
     if (spotSelected >= spotMatches.length) spotSelected = Math.max(0, spotMatches.length - 1);
 
     if (spotMatches.length === 0) {
-      box.innerHTML = `<div style="padding:20px; text-align:center; color:var(--text-secondary); font-size:13px;">No matching logins</div>`;
+      box.innerHTML = `<div style="padding:22px; text-align:center; color:var(--text-secondary); font-size:13px;">No matching logins</div>`;
       return;
     }
 
@@ -1681,13 +1834,13 @@ HTML_UI = """<!DOCTYPE html>
       const letter = (item.title[0] || "?").toUpperCase();
       row.innerHTML = `
         <div class="spot-left">
-          <div class="avatar" style="width:28px; height:28px; font-size:12px; background:${avatarColor(item.title)}">${letter}</div>
+          <div class="squircle" style="width:30px; height:30px; font-size:12px; background:${avatarGradient(item.title)}">${letter}</div>
           <div>
             <div class="item-title">${item.favorite ? "★ " : ""}${escapeHtml(item.title)}</div>
-            <div class="item-sub" style="${i === spotSelected ? 'color:rgba(255,255,255,0.85)' : ''}">${escapeHtml(item.username || "No username")}</div>
+            <div class="item-sub" style="${i === spotSelected ? 'color:rgba(255,255,255,0.88)' : ''}">${escapeHtml(item.username || "No username")}</div>
           </div>
         </div>
-        <span class="spot-badge">↵ Auto-Type</span>
+        <span class="kbd-chip" style="${i === spotSelected ? 'background:rgba(255,255,255,0.2); color:#fff; border-color:transparent;' : ''}">↵ Auto-Type</span>
       `;
       row.onclick = () => executeAutoType(idx);
       box.appendChild(row);
@@ -1732,17 +1885,21 @@ HTML_UI = """<!DOCTYPE html>
 
   function renderSidebar() {
     const list = document.getElementById("item-list");
-    const q = document.getElementById("search-input").value.toLowerCase().trim();
     list.innerHTML = "";
 
-    getSortedIndices().forEach(idx => {
+    const indices = getFilteredIndices();
+    if (indices.length === 0) {
+      list.innerHTML = `<div style="padding:24px 12px; text-align:center; color:var(--text-tertiary); font-size:12px;">No matching items</div>`;
+      return;
+    }
+
+    indices.forEach(idx => {
       const item = entries[idx];
-      if (q && !item.title.toLowerCase().includes(q) && !(item.username || "").toLowerCase().includes(q)) return;
       const div = document.createElement("div");
       div.className = "vault-item" + (idx === activeIndex ? " active" : "");
       const letter = (item.title[0] || "?").toUpperCase();
       div.innerHTML = `
-        <div class="avatar" style="background:${avatarColor(item.title)}">${letter}</div>
+        <div class="squircle" style="background:${avatarGradient(item.title)}">${letter}</div>
         <div class="item-meta">
           <div class="item-title">${escapeHtml(item.title)}</div>
           <div class="item-sub">${escapeHtml(item.username || "No username")}</div>
@@ -1755,7 +1912,7 @@ HTML_UI = """<!DOCTYPE html>
   }
 
   function passwordStrength(pw) {
-    if (pw.length < 8) return { label: "Weak Password", cls: "weak" };
+    if (pw.length < 8) return { label: "Weak Password", cls: "warn" };
     let score = 0;
     if (pw.length >= 12) score++;
     if (pw.length >= 16) score++;
@@ -1796,9 +1953,13 @@ HTML_UI = """<!DOCTYPE html>
     if (activeIndex === null || !entries[activeIndex]) {
       pane.innerHTML = `
         <div class="empty-state">
-          <div class="big-icon">🛡️</div>
-          <h3 style="color:var(--text-primary); margin-bottom:6px;">No Item Selected</h3>
-          <p style="font-size:13px;">Select a login from the sidebar, open <b>Watchtower</b>, or press <b>⌘⇧L</b> anywhere to Quick-Fill.</p>
+          <div class="empty-icon-wrap">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+            </svg>
+          </div>
+          <h3 style="color:var(--text-primary); font-size:16px; margin-bottom:6px;">No Item Selected</h3>
+          <p style="font-size:13px; max-width:320px; line-height:1.5;">Select a login from the sidebar, use <b>↑ / ↓</b> arrow keys, or press <b>⌘⇧L</b> anywhere to Quick-Fill.</p>
         </div>
       `;
       return;
@@ -1814,14 +1975,27 @@ HTML_UI = """<!DOCTYPE html>
     if (item.totp) {
       const res = await pywebview.api.get_totp(item.totp);
       const fmt = res && res.code.length === 6 ? res.code.slice(0,3) + " " + res.code.slice(3) : (res ? res.code : "");
+      const rem = res ? res.remaining : 30;
+      const circumference = 69.115;
+      const offset = circumference * (1 - (rem / 30));
       totpHtml = `
         <div class="field-row">
           <div>
             <div class="field-label">2FA Verification Code</div>
-            <div id="live-totp" class="totp-code">${fmt} (${res ? res.remaining : 0}s)</div>
+            <div class="totp-wrap">
+              <div id="live-totp" class="totp-code" onclick="copyTotp()" title="Click to copy">${fmt}</div>
+              <div style="position:relative; width:26px; height:26px; display:flex; align-items:center; justify-content:center;">
+                <svg class="totp-ring" width="26" height="26">
+                  <circle cx="13" cy="13" r="11" stroke="rgba(255,255,255,0.1)" stroke-width="2.5" fill="none"/>
+                  <circle id="totp-circle" cx="13" cy="13" r="11" stroke="#5ac8fa" stroke-width="2.5" fill="none"
+                    stroke-dasharray="${circumference}" stroke-dashoffset="${offset}" stroke-linecap="round"/>
+                </svg>
+                <span id="totp-sec" style="position:absolute; font-size:8.5px; font-weight:700; color:var(--text-secondary);">${rem}s</span>
+              </div>
+            </div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="copyTotp()">Copy</button>
+            <button class="btn" onclick="copyTotp()">Copy</button>
           </div>
         </div>
       `;
@@ -1834,7 +2008,7 @@ HTML_UI = """<!DOCTYPE html>
           <div class="field-row">
             <div>
               <div class="field-label">Notes</div>
-              <div class="field-value" style="white-space:pre-wrap;">${escapeHtml(item.notes)}</div>
+              <div class="field-value" style="white-space:pre-wrap; font-size:13.5px; line-height:1.5;">${escapeHtml(item.notes)}</div>
             </div>
           </div>
         </div>
@@ -1850,7 +2024,7 @@ HTML_UI = """<!DOCTYPE html>
             <div class="field-sub">Replaced on ${escapeHtml(h.changed_at || "Unknown date")}</div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="copyHistoryPw(${JSON.stringify(h.password).replace(/"/g, '&quot;')})">Copy</button>
+            <button class="btn" onclick="copyHistoryPw(${JSON.stringify(h.password).replace(/"/g, '&quot;')})">Copy</button>
           </div>
         </div>
       `).join("") : "";
@@ -1859,12 +2033,12 @@ HTML_UI = """<!DOCTYPE html>
         <div class="group-card">
           <div class="field-row">
             <div>
-              <div class="field-label">Previous Passwords (${history.length})</div>
+              <div class="field-title-main">Previous Passwords (${history.length})</div>
               <div class="field-sub">Archived automatically when you update this login's password</div>
             </div>
             <div class="field-actions">
-              <button class="pill-btn" onclick="showHistory = !showHistory; renderDetail();">${showHistory ? "Hide" : "View"}</button>
-              ${showHistory ? `<button class="btn-danger" onclick="clearHistory(${activeIndex})">Clear</button>` : ""}
+              <button class="btn" onclick="showHistory = !showHistory; renderDetail();">${showHistory ? "Hide" : "View"}</button>
+              ${showHistory ? `<button class="btn btn-danger" onclick="clearHistory(${activeIndex})">Clear</button>` : ""}
             </div>
           </div>
           ${rows}
@@ -1875,17 +2049,20 @@ HTML_UI = """<!DOCTYPE html>
     pane.innerHTML = `
       <div class="detail-top">
         <div class="detail-header-left">
-          <div class="detail-avatar" style="background:${avatarColor(item.title)}">${letter}</div>
-          <div>
+          <div class="detail-squircle" style="background:${avatarGradient(item.title)}">${letter}</div>
+          <div style="min-width:0;">
             <div class="detail-title">${escapeHtml(item.title)}</div>
-            <span class="strength-pill ${st.cls}">${st.label}</span>
+            <div class="badge-row">
+              <span class="pill-badge ${st.cls}">${st.label}</span>
+              ${item.totp ? '<span class="pill-badge blue">2FA Active</span>' : ''}
+            </div>
           </div>
         </div>
         <div class="action-group">
-          <button class="pill-btn" onclick="toggleFavorite(${activeIndex})" title="Pin to top">${item.favorite ? "★ Pinned" : "☆ Pin"}</button>
-          <button class="btn-autofill" onclick="executeAutoType(${activeIndex})">Auto-Type</button>
-          <button class="pill-btn" onclick="openForm(${activeIndex})">Edit</button>
-          <button class="btn-danger" onclick="deleteItem(${activeIndex})">Delete</button>
+          <button class="btn" onclick="toggleFavorite(${activeIndex})" title="Pin to top">${item.favorite ? "★ Pinned" : "☆ Pin"}</button>
+          <button class="btn btn-soft-accent" onclick="executeAutoType(${activeIndex})">Auto-Type</button>
+          <button class="btn" onclick="openForm(${activeIndex})">Edit</button>
+          <button class="btn btn-danger" onclick="deleteItem(${activeIndex})">Delete</button>
         </div>
       </div>
 
@@ -1896,7 +2073,7 @@ HTML_UI = """<!DOCTYPE html>
             <div class="field-value">${escapeHtml(item.username || "—")}</div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="copyField('username')">Copy</button>
+            <button class="btn" onclick="copyField('username')">Copy</button>
           </div>
         </div>
 
@@ -1906,8 +2083,8 @@ HTML_UI = """<!DOCTYPE html>
             <div class="field-value mono">${revealPw ? colorizePassword(item.password) : masked}</div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="revealPw = !revealPw; renderDetail();">${revealPw ? "Hide" : "Show"}</button>
-            <button class="pill-btn" onclick="copyField('password')">Copy</button>
+            <button class="btn" onclick="revealPw = !revealPw; renderDetail();">${revealPw ? "Hide" : "Show"}</button>
+            <button class="btn" onclick="copyField('password')" title="Copy Password (⌘C)">Copy</button>
           </div>
         </div>
 
@@ -1920,8 +2097,8 @@ HTML_UI = """<!DOCTYPE html>
           </div>
           ${item.url ? `
             <div class="field-actions">
-              <button class="pill-btn" onclick="pywebview.api.open_url(entries[activeIndex].url)">Open</button>
-              <button class="pill-btn" onclick="copyField('url')">Copy</button>
+              <button class="btn" onclick="pywebview.api.open_url(entries[activeIndex].url)">Open ↗</button>
+              <button class="btn" onclick="copyField('url')">Copy</button>
             </div>` : ""}
         </div>
       </div>
@@ -1944,39 +2121,39 @@ HTML_UI = """<!DOCTYPE html>
     pane.innerHTML = `
       <div class="detail-top">
         <div class="detail-title">Settings</div>
-        <button class="pill-btn" onclick="const s=getSortedIndices();if(s.length>0){activeIndex=s[0];renderSidebar();}renderDetail();">Done</button>
+        <button class="btn" onclick="const s=getFilteredIndices();if(s.length>0){activeIndex=s[0];renderSidebar();}renderDetail();">Done</button>
       </div>
 
       <div class="section-heading">Import & Zero-Knowledge Sync</div>
       <div class="group-card">
         <div class="field-row">
           <div>
-            <div class="field-label">Import Passwords from CSV</div>
+            <div class="field-title-main">Import Passwords from CSV</div>
             <div class="field-sub">Supports Apple Passwords, Chrome, Brave, 1Password, and Bitwarden CSV files.</div>
           </div>
           <div class="field-actions">
-            <button class="btn-autofill" onclick="handleImportCSV()">Import CSV</button>
+            <button class="btn btn-soft-accent" onclick="handleImportCSV()">Import CSV</button>
           </div>
         </div>
 
         <div class="field-row">
           <div>
-            <div class="field-label">Vault Sync Folder (iCloud Drive / USB)</div>
+            <div class="field-title-main">Vault Sync Folder (iCloud Drive / USB)</div>
             <div id="sync-path-label" class="field-sub mono" style="font-size:11px;">${escapeHtml(info.vault_path)}</div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="handleChooseSyncFolder()">Change Folder</button>
-            <button class="pill-btn" onclick="handleResetSyncFolder()">Default</button>
+            <button class="btn" onclick="handleChooseSyncFolder()">Change Folder</button>
+            <button class="btn" onclick="handleResetSyncFolder()">Default</button>
           </div>
         </div>
 
         <div class="field-row">
           <div>
-            <div class="field-label">Export Encrypted Backup</div>
+            <div class="field-title-main">Export Encrypted Backup</div>
             <div class="field-sub">Save a standalone AES-256-GCM snapshot (.enc) anywhere.</div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="exportBackup()">Export Backup</button>
+            <button class="btn" onclick="exportBackup()">Export Backup</button>
           </div>
         </div>
       </div>
@@ -1985,7 +2162,7 @@ HTML_UI = """<!DOCTYPE html>
       <div class="group-card">
         <div class="field-row">
           <div>
-            <div class="field-label">Unlock with Touch ID / Apple Watch / Mac Password</div>
+            <div class="field-title-main">Unlock with Touch ID / Apple Watch / Mac Password</div>
             <div class="field-sub">Stores your Master Key in macOS hardware Keychain for instant biometric unlock.</div>
           </div>
           <div class="field-actions">
@@ -1998,7 +2175,7 @@ HTML_UI = """<!DOCTYPE html>
 
         <div class="field-row">
           <div>
-            <div class="field-label">Launch Voltes IIV at Login</div>
+            <div class="field-title-main">Launch Voltes IIV at Login</div>
             <div class="field-sub">Keep Voltes IIV ready in your macOS Menu Bar whenever you start your Mac.</div>
           </div>
           <div class="field-actions">
@@ -2014,23 +2191,23 @@ HTML_UI = """<!DOCTYPE html>
       <div class="group-card">
         <div class="field-row">
           <div>
-            <div class="field-label">
+            <div class="field-title-main">
               Accessibility Permission
-              <span class="status-pill ${granted ? '' : 'warn'}" style="margin-left:8px;">
+              <span class="pill-badge ${granted ? '' : 'warn'}" style="margin-left:8px;">
                 ${granted ? '✓ Granted' : 'Action Required'}
               </span>
             </div>
             <div class="field-sub">Required for <b>⌘⇧L</b> Quick-Fill and Auto-Type to type passwords into browsers.</div>
           </div>
           <div class="field-actions">
-            <button class="pill-btn" onclick="pywebview.api.open_accessibility_settings()">Open Panel</button>
-            <button class="pill-btn" onclick="openSettings()">Refresh</button>
+            <button class="btn" onclick="pywebview.api.open_accessibility_settings()">Open Panel</button>
+            <button class="btn" onclick="openSettings()">Refresh</button>
           </div>
         </div>
 
         <div class="field-row">
           <div>
-            <div class="field-label">Press Enter After Auto-Type</div>
+            <div class="field-title-main">Press Enter After Auto-Type</div>
             <div class="field-sub">Automatically submit login forms after typing Username and Password.</div>
           </div>
           <div class="field-actions">
@@ -2046,7 +2223,7 @@ HTML_UI = """<!DOCTYPE html>
       <div class="group-card">
         <div class="field-row">
           <div>
-            <div class="field-label">Auto-Lock Inactivity Timer</div>
+            <div class="field-title-main">Auto-Lock Inactivity Timer</div>
             <div class="field-sub">Automatically lock the vault when idle.</div>
           </div>
           <div class="field-actions">
@@ -2062,7 +2239,7 @@ HTML_UI = """<!DOCTYPE html>
 
         <div class="field-row">
           <div>
-            <div class="field-label">Clear Clipboard Automatically</div>
+            <div class="field-title-main">Clear Clipboard Automatically</div>
             <div class="field-sub">Wipe copied passwords from macOS clipboard after delay.</div>
           </div>
           <div class="field-actions">
@@ -2086,7 +2263,7 @@ HTML_UI = """<!DOCTYPE html>
           <label>New Master Password (min 8 characters)</label>
           <input id="cp-new" type="password" class="apple-input" placeholder="New Master Password" />
         </div>
-        <button class="btn-primary" style="width:190px;" onclick="submitChangeMasterPw()">Update Master Password</button>
+        <button class="btn btn-accent" style="height:36px; padding:0 16px; font-weight:600;" onclick="submitChangeMasterPw()">Update Master Password</button>
       </div>
     `;
   }
@@ -2186,8 +2363,8 @@ HTML_UI = """<!DOCTYPE html>
           <label>Password</label>
           <div class="pw-gen-row">
             <input id="f-pw" class="apple-input mono" placeholder="Strong password" value="${escapeAttr(item.password)}" />
-            <button class="pill-btn" style="height:38px; padding:0 12px;" onclick="genFormPw('random')">Random</button>
-            <button class="pill-btn" style="height:38px; padding:0 12px;" onclick="genFormPw('memorable')">Passphrase</button>
+            <button class="btn" style="height:38px; padding:0 12px;" onclick="genFormPw('random')">Random</button>
+            <button class="btn" style="height:38px; padding:0 12px;" onclick="genFormPw('memorable')">Passphrase</button>
           </div>
           <div class="gen-opts">
             <span>Length: <b id="gen-len-val">20</b></span>
@@ -2214,8 +2391,8 @@ HTML_UI = """<!DOCTYPE html>
         </div>
       </div>
       <div style="display:flex; gap:10px;">
-        <button class="btn-primary" style="width:150px;" onclick="saveForm(${editIdx})">Save Encrypted</button>
-        <button class="pill-btn" style="height:38px; padding:0 16px;" onclick="renderDetail()">Cancel</button>
+        <button class="btn btn-accent" style="height:38px; padding:0 20px; font-weight:600;" onclick="saveForm(${editIdx})">Save Encrypted</button>
+        <button class="btn" style="height:38px; padding:0 16px;" onclick="renderDetail()">Cancel</button>
       </div>
     `;
   }
@@ -2266,7 +2443,7 @@ HTML_UI = """<!DOCTYPE html>
     const res = await pywebview.api.delete_entry(idx);
     if (res.ok) {
       entries = res.entries;
-      const s = getSortedIndices();
+      const s = getFilteredIndices();
       activeIndex = s.length > 0 ? s[0] : null;
       renderSidebar();
       renderDetail();
@@ -2386,10 +2563,10 @@ if __name__ == "__main__":
         "Voltes IIV",
         html=HTML_UI,
         js_api=api,
-        width=940,
-        height=650,
-        min_size=(780, 520),
-        background_color="#161618",
+        width=960,
+        height=660,
+        min_size=(790, 530),
+        background_color="#121214",
         hidden=False,
     )
     api.set_window(window)
