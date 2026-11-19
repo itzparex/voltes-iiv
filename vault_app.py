@@ -29,7 +29,8 @@ from ApplicationServices import AXIsProcessTrusted
 from LocalAuthentication import LAContext, LAPolicyDeviceOwnerAuthentication
 from PyObjCTools import AppHelper
 from cryptography.hazmat.primitives.kdf.argon2 import Argon2id
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import vault_core
+FOUNDER_META = vault_core.verify_founder_integrity()
 
 NSBundle.mainBundle().infoDictionary()["CFBundleName"] = "Voltes IIV"
 
@@ -180,6 +181,11 @@ def derive_key(master_password: str, salt: bytes) -> bytes:
 
 def save_encrypted_vault(data: list, master_password: str):
     vdir, vfile = get_active_vault_paths()
+    vault_core.save_encrypted_vault(vdir, vfile, data, master_password)
+    return
+
+def _unused_save_encrypted_vault(data: list, master_password: str):
+    vdir, vfile = get_active_vault_paths()
     vdir.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(vdir, 0o700)
@@ -199,6 +205,10 @@ def save_encrypted_vault(data: list, master_password: str):
 
 
 def load_encrypted_vault(master_password: str) -> list:
+    _, vfile = get_active_vault_paths()
+    return vault_core.load_encrypted_vault(vfile, master_password)
+
+def _unused_load_encrypted_vault(master_password: str) -> list:
     _, vfile = get_active_vault_paths()
     with open(vfile, "rb") as f:
         raw = f.read()
@@ -1217,6 +1227,7 @@ HTML_UI = """<!DOCTYPE html>
         Unlock with Touch ID / Mac Password
       </button>
       <div id="lock-error" class="error-msg"></div>
+      <div style="margin-top:18px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.07); font-size:11px; color:#636369;">Founded by <b style="color:#8e8e95;">Rexbelly Zipagan</b> (@itzparex)</div>
     </div>
   </div>
 
@@ -2249,6 +2260,19 @@ HTML_UI = """<!DOCTYPE html>
               <option value="60" ${appSettings.clear_clipboard_seconds===60?'selected':''}>1 minute</option>
               <option value="0" ${appSettings.clear_clipboard_seconds===0?'selected':''}>Never</option>
             </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="section-heading">About & Authorship</div>
+      <div class="group-card">
+        <div class="field-row">
+          <div>
+            <div class="field-title-main">Voltes IIV — Founded by Rexbelly Zipagan (@itzparex)</div>
+            <div class="field-sub mono" style="font-size:11px;">Native ARM64 C-Compiled Security Core · Cryptographically Signed</div>
+          </div>
+          <div class="field-actions">
+            <span class="pill-badge blue">Verified Origin</span>
           </div>
         </div>
       </div>
